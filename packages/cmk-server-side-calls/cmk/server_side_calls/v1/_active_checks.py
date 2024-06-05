@@ -7,12 +7,12 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from ._utils import HostConfig, HTTPProxy, Secret
+from ._utils import HostConfig, Secret
 
 _ParsedParameters = TypeVar("_ParsedParameters")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ActiveCheckCommand:
     """
     Defines an active check command
@@ -27,7 +27,7 @@ class ActiveCheckCommand:
         command_arguments: Arguments that are passed to the active checks command-line interface
 
     Example:
-        >>> from cmk.server_side_calls.v1 import StoredSecret
+        >>> from cmk.server_side_calls.v1 import Secret
 
         >>> ActiveCheckCommand(
         ...     service_description="Example description",
@@ -35,21 +35,25 @@ class ActiveCheckCommand:
         ...         "--user",
         ...         "example-user",
         ...         "--password",
-        ...         StoredSecret("stored_password_id")
+        ...         Secret(0)
         ...     ]
         ... )
         ActiveCheckCommand(service_description='Example description', command_arguments=['--user', \
-'example-user', '--password', StoredSecret(value='stored_password_id', format='%s')])
+'example-user', '--password', Secret(id=0, format='%s', pass_safely=True)])
     """
 
     service_description: str
     command_arguments: Sequence[str | Secret]
 
 
-@dataclass(frozen=True, kw_only=True)
-class ActiveCheckConfig(Generic[_ParsedParameters]):
+class ActiveCheckConfig(
+    Generic[_ParsedParameters]
+):  # pylint: disable=too-few-public-methods,duplicate-code
     """
     Defines an active check
+
+    Instances of this class will only be picked up by Checkmk if their names start with
+    ``active_check_``.
 
     One ActiveCheckConfig can create multiple Checkmk services.
     The executable will be searched for in the following three folders, in
@@ -76,7 +80,6 @@ class ActiveCheckConfig(Generic[_ParsedParameters]):
         >>> def generate_example_commands(
         ...     params: Mapping[str, object],
         ...     host_config: HostConfig,
-        ...     http_proxies: Mapping[str, HTTPProxy]
         ... ) -> Iterable[ActiveCheckCommand]:
         ...     args = ["--service", str(params["service"])]
         ...     yield ActiveCheckCommand(
@@ -101,8 +104,23 @@ class ActiveCheckConfig(Generic[_ParsedParameters]):
         The first existing file will be used.
     """
 
-    name: str
-    parameter_parser: Callable[[Mapping[str, object]], _ParsedParameters]
-    commands_function: Callable[
-        [_ParsedParameters, HostConfig, Mapping[str, HTTPProxy]], Iterable[ActiveCheckCommand]
-    ]
+    def __init__(
+        self,
+        *,
+        name: str,
+        parameter_parser: Callable[[Mapping[str, object]], _ParsedParameters],
+        commands_function: Callable[[_ParsedParameters, HostConfig], Iterable[ActiveCheckCommand]],
+    ):
+        self.name = name
+        self._parameter_parser = parameter_parser
+        self._commands_function = commands_function
+
+    def __call__(
+        self,
+        parameters: Mapping[str, object],
+        host_config: HostConfig,
+    ) -> Iterable[ActiveCheckCommand]:
+        return self._commands_function(
+            self._parameter_parser(parameters),
+            host_config,
+        )

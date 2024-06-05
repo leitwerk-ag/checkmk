@@ -3,8 +3,10 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# pylint: disable=protected-access
+
 import logging
-from collections.abc import Iterator, MutableMapping
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -69,7 +71,7 @@ class MockUpdateAction(registry.UpdateAction):
         super().__init__(name=name, title=title, sort_index=sort_index)
         self.calls = 0
 
-    def __call__(self, logger: logging.Logger, update_state: MutableMapping[str, str]) -> None:
+    def __call__(self, logger: logging.Logger) -> None:
         self.calls += 1
 
 

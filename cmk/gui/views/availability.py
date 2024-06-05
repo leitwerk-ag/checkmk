@@ -16,12 +16,12 @@ from cmk.utils.hostaddress import HostName
 from cmk.utils.servicename import ServiceName
 from cmk.utils.statename import host_state_name, service_state_name
 
-import cmk.gui.availability as availability
-import cmk.gui.bi as bi
-import cmk.gui.utils.escaping as escaping
+from cmk.gui import availability, bi
 from cmk.gui.availability import (
     AVData,
     AVEntry,
+    AVGroups,
+    AVLayoutTimeline,
     AVMode,
     AVObjectCells,
     AVObjectSpec,
@@ -30,6 +30,7 @@ from cmk.gui.availability import (
     AVOptionValueSpecs,
     AVRawData,
     AVRowCells,
+    AVTimelineStyle,
     AVTimeRange,
 )
 from cmk.gui.breadcrumb import Breadcrumb, BreadcrumbItem
@@ -54,6 +55,7 @@ from cmk.gui.page_menu import (
 from cmk.gui.painter.v0.helpers import format_plugin_output
 from cmk.gui.table import Table, table_element
 from cmk.gui.type_defs import FilterHeader, HTTPVariables, Rows
+from cmk.gui.utils import escaping
 from cmk.gui.utils.escaping import escape_to_html_permissive
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.output_funnel import output_funnel
@@ -71,6 +73,7 @@ from cmk.gui.valuespec import (
     Optional,
     TextAreaUnicode,
     TextInput,
+    ValueSpec,
 )
 from cmk.gui.view import View
 from cmk.gui.visuals import page_menu_topic_add_to, view_title
@@ -122,7 +125,9 @@ def _show_availability_options(
 
         for name, height, _show_in_reporting, vs in valuespecs:
 
-            def renderer(name=name, vs=vs, avoptions=avoptions) -> None:  # type: ignore[no-untyped-def]
+            def renderer(
+                name: str = name, vs: ValueSpec = vs, avoptions: AVOptions = avoptions
+            ) -> None:
                 vs.render_input("avo_" + name, avoptions.get(name))
 
             html.render_floating_option(name, height, vs.title(), renderer)
@@ -216,7 +221,7 @@ def show_availability_page(  # pylint: disable=too-many-branches
     if request.var("av_host"):
         av_object = (
             SiteId(request.get_str_input_mandatory("av_site")),
-            HostName(request.get_str_input_mandatory("av_host")),
+            request.get_validated_type_input_mandatory(HostName, "av_host"),
             ServiceName(request.get_str_input_mandatory("av_service")),
         )
         title += av_object[1]
@@ -287,11 +292,13 @@ def show_availability_page(  # pylint: disable=too-many-branches
             request,
             title,
             breadcrumb,
-            page_menu=_page_menu_availability(
-                breadcrumb, view, what, av_mode, av_object, time_range, avoptions
-            )
-            if display_options.enabled(display_options.B)
-            else None,
+            page_menu=(
+                _page_menu_availability(
+                    breadcrumb, view, what, av_mode, av_object, time_range, avoptions
+                )
+                if display_options.enabled(display_options.B)
+                else None
+            ),
             browser_reload=html.browser_reload,
         )
         html.begin_page_content()
@@ -343,9 +350,9 @@ def show_availability_page(  # pylint: disable=too-many-branches
         html.body_end()
 
 
-def _page_menu_availability(  # type: ignore[no-untyped-def]
+def _page_menu_availability(
     breadcrumb: Breadcrumb,
-    view,
+    view: View,
     what: AVObjectType,
     av_mode: AVMode,
     av_object: AVObjectSpec,
@@ -500,8 +507,8 @@ def do_render_availability(
     show_annotations(annotations, av_rawdata, what, avoptions, omit_service=av_object is not None)
 
 
-def render_availability_tables(  # type: ignore[no-untyped-def]
-    availability_tables, what, avoptions
+def render_availability_tables(
+    availability_tables: AVGroups, what: AVObjectType, avoptions: AVOptions
 ) -> None:
     if not availability_tables:
         html.show_message(_("No matching hosts/services."))
@@ -606,13 +613,13 @@ def _render_availability_timeline(
             if "omit_timeline_plugin_output" not in avoptions["labelling"]:
                 table.cell(
                     _("Summary at last status change"),
-                    format_plugin_output(row.get("log_output", ""), row),
+                    format_plugin_output(row.get("log_output", ""), request=request, row=row),
                 )
 
             if "timeline_long_output" in avoptions["labelling"]:
                 table.cell(
                     _("Last known details"),
-                    format_plugin_output(row.get("long_log_output", ""), row),
+                    format_plugin_output(row.get("long_log_output", ""), request=request, row=row),
                 )
 
     # Legend for timeline
@@ -649,8 +656,8 @@ def render_timeline_legend(what: AVObjectType) -> None:
     html.close_div()
 
 
-def render_availability_table(  # type: ignore[no-untyped-def]
-    group_title, availability_table, what, avoptions
+def render_availability_table(
+    group_title: str | None, availability_table: AVData, what: AVObjectType, avoptions: AVOptions
 ) -> None:
     av_table = availability.layout_availability_table(
         what, group_title, availability_table, avoptions
@@ -712,8 +719,8 @@ def render_availability_table(  # type: ignore[no-untyped-def]
                 )
 
 
-def render_timeline_bar(  # type: ignore[no-untyped-def]
-    timeline_layout, style, timeline_nr=0
+def render_timeline_bar(
+    timeline_layout: AVLayoutTimeline, style: AVTimelineStyle, timeline_nr: int = 0
 ) -> None:
     render_date = timeline_layout["render_date"]
     time_range: AVTimeRange = timeline_layout["range"]
@@ -1213,7 +1220,7 @@ def _validate_reclassify_of_states(value, varprefix):
     if host_state is not None:
         if not value.get("host"):
             raise MKUserError(
-                "_editanno_p_host", _("Please set a hostname for host state reclassification")
+                "_editanno_p_host", _("Please set a host name for host state reclassification")
             )
 
     service_state = value.get("service_state")
@@ -1228,7 +1235,7 @@ def _validate_reclassify_of_states(value, varprefix):
 def _vs_annotation():
     elements: list[DictionaryEntry] = [
         ("site", TextInput(title=_("Site"))),
-        ("host", TextInput(title=_("Hostname"))),
+        ("host", TextInput(title=_("Host name"))),
         (
             "host_state",
             Optional(

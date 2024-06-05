@@ -7,15 +7,18 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from ._utils import HostConfig, HTTPProxy, Secret
+from ._utils import HostConfig, Secret
 
 _ParsedParameters = TypeVar("_ParsedParameters")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class SpecialAgentCommand:
     """
     Defines a special agent command
+
+    Instances of this class will only be picked up by Checkmk if their names start with
+    ``special_agent_``.
 
     One SpecialAgentCommand results in one call of the special agent.
 
@@ -39,10 +42,12 @@ class SpecialAgentCommand:
     stdin: str | None = None
 
 
-@dataclass(frozen=True, kw_only=True)
-class SpecialAgentConfig(Generic[_ParsedParameters]):
+class SpecialAgentConfig(Generic[_ParsedParameters]):  # pylint: disable=too-few-public-methods
     """
     Defines a special agent
+
+    Instances of this class will only be picked up by Checkmk if their names start
+    with ``special_agent_``.
 
     One SpecialAgentConfig can result in multiple calls of the special agent.
     The executable will be searched for in the following three folders, in
@@ -72,7 +77,6 @@ class SpecialAgentConfig(Generic[_ParsedParameters]):
         >>> def generate_example_commands(
         ...     params: ExampleParams,
         ...     host_config: HostConfig,
-        ...     http_proxies: Mapping[str, HTTPProxy]
         ... ) -> Iterable[SpecialAgentCommand]:
         ...     args = ["--protocol", params.protocol, "--services", "logs", "errors", "stats"]
         ...     yield SpecialAgentCommand(command_arguments=args)
@@ -94,8 +98,20 @@ class SpecialAgentConfig(Generic[_ParsedParameters]):
         The first existing file will be used.
     """
 
-    name: str
-    parameter_parser: Callable[[Mapping[str, object]], _ParsedParameters]
-    commands_function: Callable[
-        [_ParsedParameters, HostConfig, Mapping[str, HTTPProxy]], Iterable[SpecialAgentCommand]
-    ]
+    def __init__(
+        self,
+        *,
+        name: str,
+        parameter_parser: Callable[[Mapping[str, object]], _ParsedParameters],
+        commands_function: Callable[[_ParsedParameters, HostConfig], Iterable[SpecialAgentCommand]],
+    ):
+        self.name = name
+        self._parameter_parser = parameter_parser
+        self._commands_function = commands_function
+
+    def __call__(
+        self,
+        parameters: Mapping[str, object],
+        host_config: HostConfig,
+    ) -> Iterable[SpecialAgentCommand]:
+        return self._commands_function(self._parameter_parser(parameters), host_config)

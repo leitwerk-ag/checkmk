@@ -6,17 +6,21 @@
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum, StrEnum
-from typing import Literal
+from typing import Literal, TypeVar
 
-from ..v1 import Metric, Result, State
+from cmk.agent_based.v1 import Metric, Result, State
 
-_NoLevels = tuple[Literal["no_levels"], None]
+_NumberT = TypeVar("_NumberT", int, float)
 
-_FixedLevels = tuple[Literal["fixed"], tuple[int, int] | tuple[float, float]]
+NoLevelsT = tuple[Literal["no_levels"], None]
 
-_PredictiveLevels = tuple[
-    Literal["predictive"], tuple[str, float | None, tuple[float, float] | None]
+FixedLevelsT = tuple[Literal["fixed"], tuple[_NumberT, _NumberT]]
+
+PredictiveLevelsT = tuple[
+    Literal["predictive"], tuple[str, float | None, tuple[_NumberT, _NumberT] | None]
 ]
+
+LevelsT = NoLevelsT | FixedLevelsT[_NumberT] | PredictiveLevelsT[_NumberT]
 
 
 class Direction(StrEnum):
@@ -110,7 +114,7 @@ def _make_prediction_metric(name: str, value: float | None, direction: Direction
 
 def _check_levels(
     value: float,
-    levels: _NoLevels | _FixedLevels | _PredictiveLevels | None,
+    levels: LevelsT[_NumberT] | None,
     levels_direction: Direction,
     render_func: Callable[[float], str],
 ) -> CheckLevelsResult:
@@ -126,14 +130,15 @@ def _check_levels(
 
         case "predictive", (metric, prediction, p_levels):
             assert isinstance(metric, str)
-            assert prediction is None or isinstance(prediction, float)
+            # we expect `float`, but since typing does not prevent us from passing `int`, be nice
+            assert prediction is None or isinstance(prediction, (float, int))
             assert p_levels is None or isinstance(p_levels, tuple)
             return _check_predictive_levels(
                 value, metric, prediction, p_levels, levels_direction, render_func
             )
 
-        case _other:
-            raise TypeError("Incorrect level parameters")
+        case other:
+            raise TypeError(f"Incorrect level parameters: {other!r}")
 
 
 def _prediction_text(prediction: float | None, render_func: Callable[[float], str]) -> str:
@@ -165,10 +170,10 @@ def _summarize_predictions(
 def check_levels(  # pylint: disable=too-many-arguments,too-many-locals
     value: float,
     *,
-    levels_upper: _NoLevels | _FixedLevels | _PredictiveLevels | None = None,
-    levels_lower: _NoLevels | _FixedLevels | _PredictiveLevels | None = None,
+    levels_upper: LevelsT[_NumberT] | None = None,
+    levels_lower: LevelsT[_NumberT] | None = None,
     metric_name: str | None = None,
-    render_function: Callable[[float], str] | None = None,
+    render_func: Callable[[float], str] | None = None,
     label: str | None = None,
     boundaries: tuple[float | None, float | None] | None = None,
     notice_only: bool = False,
@@ -196,7 +201,7 @@ def check_levels(  # pylint: disable=too-many-arguments,too-many-locals
         ...     levels_upper=("fixed", (12., 42.)),
         ...     metric_name="temperature",
         ...     label="Fridge",
-        ...     render_function=lambda v: "%.1f°" % v,
+        ...     render_func=lambda v: "%.1f°" % v,
         ... )
         >>> print(result.summary)
         Fridge: 23.0° (warn/crit at 12.0°/42.0°)
@@ -204,7 +209,7 @@ def check_levels(  # pylint: disable=too-many-arguments,too-many-locals
         Metric('temperature', 23.0, levels=(12.0, 42.0))
 
     """
-    render_func = render_function if render_function else _default_rendering
+    render_func = render_func if render_func else _default_rendering
     value_string = render_func(value)
     info_text = f"{label}: {value_string}" if label else value_string
 

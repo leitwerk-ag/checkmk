@@ -13,10 +13,10 @@ Docs:
 - https://library.netapp.com/ecmdocs/ECMLP2885777/html/resources/counter_table.html
 - https://docs.netapp.com/us-en/ontap-restmap-9131//perf.html#perf-object-instance-list-info-iter
 """
+import datetime
 from collections.abc import Sequence
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
-import isodate  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
 MEGA = 1024.0 * 1024.0
@@ -585,7 +585,7 @@ class EnvironmentDiscreteSensorModel(EnvironmentSensorModel):
 
 
 class DiscrimnatorEnvSensorModel(BaseModel):
-    sensor: Union[EnvironmentThresholdSensorModel, EnvironmentDiscreteSensorModel] = Field(
+    sensor: EnvironmentThresholdSensorModel | EnvironmentDiscreteSensorModel = Field(
         discriminator="sensor_type"
     )
 
@@ -637,12 +637,48 @@ class SnapMirrorModel(BaseModel):
     policy_type: str
     state: str | None = None
     source_svm_name: str | None = None
-    lag_time: str | None = None
+    lag_time: datetime.timedelta | None = None
     destination: str
 
-    def lagtime(self) -> int | None:
+    def lagtime(self) -> float | None:
+        """
+        see: https://kb.netapp.com/onprem/ontap/dp/SnapMirror/What_is_SnapMirror_lag_time
+        """
+
         if self.lag_time is None:
             return None
 
-        isodate.parse_duration(self.lag_time)
-        return int(isodate.parse_duration(self.lag_time).total_seconds())
+        return self.lag_time.total_seconds()
+
+
+class FcPortModel(BaseModel):
+    """
+    cfr: https://docs.netapp.com/us-en/ontap-restmap-9131//fcp.html#fcp-adapter-get-iter
+    """
+
+    supported_protocols: Sequence[str]
+    wwpn: str
+    wwnn: str
+    physical_protocol: str
+    state: str
+    name: str
+    description: str
+    enabled: bool
+    node_name: str
+    connected_speed: int | None = None  # gigabit per second
+
+    def speed_in_bps(self) -> int | None:
+        """Returns the speed in bits per second"""
+        return self.connected_speed * 1000**3 if self.connected_speed is not None else None
+
+
+class FcInterfaceTrafficCountersModel(BaseModel):
+    """
+    cfr: https://docs.netapp.com/us-en/ontap-pcmap-9141/
+    """
+
+    svm_name: str
+    table: str
+    counters: Sequence[dict]
+    name: str  # was: instance-name
+    port_wwpn: str

@@ -10,20 +10,21 @@ import time
 from collections.abc import Collection, Iterator, Mapping
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, NamedTuple, overload
+from typing import Any, cast, Literal, NamedTuple, overload
 
-import cmk.utils.store as store
+from livestatus import LivestatusResponse, SiteId
+
+from cmk.utils import store
 from cmk.utils.notify import NotificationContext
-from cmk.utils.notify_types import EventRule, NotifyAnalysisInfo
+from cmk.utils.notify_types import EventRule, is_always_bulk, NotifyAnalysisInfo
 from cmk.utils.statename import host_state_name, service_state_name
+from cmk.utils.user import UserId
 from cmk.utils.version import edition, Edition
 
-import cmk.gui.forms as forms
-import cmk.gui.permissions as permissions
-import cmk.gui.userdb as userdb
 import cmk.gui.view_utils
 import cmk.gui.watolib.audit_log as _audit_log
 import cmk.gui.watolib.changes as _changes
+from cmk.gui import forms, permissions, sites, userdb
 from cmk.gui.breadcrumb import Breadcrumb
 from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKUserError
@@ -48,7 +49,7 @@ from cmk.gui.page_menu import (
 )
 from cmk.gui.site_config import has_wato_slave_sites, site_is_local, wato_slave_sites
 from cmk.gui.table import Table, table_element
-from cmk.gui.type_defs import ActionResult, PermissionName
+from cmk.gui.type_defs import ActionResult, MegaMenu, PermissionName
 from cmk.gui.utils.autocompleter_config import ContextAutocompleterConfig
 from cmk.gui.utils.flashed_messages import flash
 from cmk.gui.utils.html import HTML
@@ -99,11 +100,7 @@ from cmk.gui.watolib.check_mk_automations import (
 from cmk.gui.watolib.global_settings import load_configuration_settings
 from cmk.gui.watolib.hosts_and_folders import folder_preserving_link, make_action_link
 from cmk.gui.watolib.mode import mode_url, ModeRegistry, redirect, WatoMode
-from cmk.gui.watolib.notifications import (
-    load_notification_rules,
-    load_user_notification_rules,
-    save_notification_rules,
-)
+from cmk.gui.watolib.notifications import load_user_notification_rules, NotificationRuleConfigFile
 from cmk.gui.watolib.sample_config import get_default_notification_rule, new_notification_rule_id
 from cmk.gui.watolib.timeperiods import TimeperiodSelection
 from cmk.gui.watolib.user_scripts import load_notification_scripts
@@ -123,7 +120,12 @@ def register(mode_registry: ModeRegistry) -> None:
 
 
 class ABCNotificationsMode(ABCEventsMode):
-    # TODO: Clean this up. Use inheritance
+    def __init__(self) -> None:
+        super().__init__()
+
+        # Make sure that all dynamic permissions are available
+        permissions.load_dynamic_permissions()
+
     @classmethod
     def _rule_match_conditions(cls):
         return (
@@ -333,8 +335,9 @@ class ABCNotificationsMode(ABCEventsMode):
                     elif what == "miss":
                         html.icon("hyphen", _("This rule does not match: %s") % reason)
 
+                table.cell("#", css=["narrow nowrap"])
+
                 if show_buttons and self._actions_allowed(rule):
-                    table.cell("#", css=["narrow nowrap"])
                     html.write_text(nr)
                     table.cell(_("Actions"), css=["buttons"])
                     links = self._rule_links(rule, nr, profilemode, userid)
@@ -364,11 +367,11 @@ class ABCNotificationsMode(ABCEventsMode):
 
                 table.cell(_("Type"), css=["narrow"])
                 if notify_method[1] is None:
-                    html.icon("cross_bg_white", _("Cancel notifications for this plugin type"))
+                    html.icon("cross_bg_white", _("Cancel notifications for this plug-in type"))
                 else:
                     html.icon("checkmark", _("Create a notification"))
 
-                table.cell(_("Plugin"), notify_plugin or _("Plain Email"), css=["narrow nowrap"])
+                table.cell(_("Plug-in"), notify_plugin or _("Plain Email"), css=["narrow nowrap"])
 
                 table.cell(_("Bulk"), css=["narrow"])
                 if "bulk" in rule or "bulk_period" in rule:
@@ -461,7 +464,7 @@ class ABCNotificationsMode(ABCEventsMode):
         return infos
 
     def _actions_allowed(self, rule):
-        # In case a notification plugin does not exist anymore the permission is completely missing.
+        # In case a notification plug-in does not exist anymore the permission is completely missing.
         permission_name = "notification_plugin.%s" % rule["notify_plugin"][0]
         return permission_name not in permissions.permission_registry or user.may(permission_name)
 
@@ -572,9 +575,9 @@ class ModeNotifications(ABCNotificationsMode):
                                     icon_name="analysis",
                                     item=PageMenuPopup(
                                         content=self._render_test_notifications(),
-                                        css_classes=["active"]
-                                        if self._test_notification_ongoing()
-                                        else [],
+                                        css_classes=(
+                                            ["active"] if self._test_notification_ongoing() else []
+                                        ),
                                     ),
                                     is_shortcut=True,
                                     is_suggested=True,
@@ -599,9 +602,9 @@ class ModeNotifications(ABCNotificationsMode):
                 title=_("Toggle elements"),
                 entries=[
                     PageMenuEntry(
-                        title=_("Hide user rules")
-                        if self._show_user_rules
-                        else _("Show user rules"),
+                        title=(
+                            _("Hide user rules") if self._show_user_rules else _("Show user rules")
+                        ),
                         icon_name={
                             "icon": "checkbox",
                             "emblem": "disable" if self._show_user_rules else "enable",
@@ -617,9 +620,11 @@ class ModeNotifications(ABCNotificationsMode):
                         ),
                     ),
                     PageMenuEntry(
-                        title=_("Hide analysis")
-                        if self._show_backlog and not request.var("test_notification")
-                        else _("Show analysis"),
+                        title=(
+                            _("Hide analysis")
+                            if self._show_backlog and not request.var("test_notification")
+                            else _("Show analysis")
+                        ),
                         icon_name={
                             "icon": "analyze",
                             "emblem": "disable" if self._show_backlog else "enable",
@@ -698,7 +703,7 @@ class ModeNotifications(ABCNotificationsMode):
                 self._get_notification_rules(),
                 "notification",
                 _("notification rule"),
-                save_notification_rules,
+                NotificationRuleConfigFile().save,
             )
         return redirect(self.mode_url())
 
@@ -714,7 +719,7 @@ class ModeNotifications(ABCNotificationsMode):
         advanced_test_options = self._vs_advanced_test_options().from_html_vars("advanced_opts")
         self._vs_advanced_test_options().validate_value(advanced_test_options, "advanced_opts")
 
-        hostname = general_test_options["hostname_choice"]
+        hostname = general_test_options["on_hostname_hint"]
         context: dict[str, Any] = {
             "HOSTNAME": hostname,
             "HOSTALIAS": hostname,
@@ -735,7 +740,7 @@ class ModeNotifications(ABCNotificationsMode):
             context["HOSTSTATE"] = "UP"
 
         notification_nr = str(advanced_test_options["notification_nr"])
-        if service_desc := general_test_options.get("service_choice"):
+        if service_desc := general_test_options.get("on_service_hint"):
             if not service_desc:
                 raise MKUserError(None, _("Please provide a service."))
 
@@ -779,10 +784,10 @@ class ModeNotifications(ABCNotificationsMode):
 
         return context
 
-    def _get_notification_rules(self):
-        return load_notification_rules()
+    def _get_notification_rules(self) -> list[EventRule]:
+        return NotificationRuleConfigFile().load_for_reading()
 
-    def _save_notification_display_options(self):
+    def _save_notification_display_options(self) -> None:
         user.save_file(
             "notification_display_options",
             {
@@ -815,6 +820,10 @@ class ModeNotifications(ABCNotificationsMode):
             except Exception as e:
                 raise MKUserError(None, "Failed to parse context from request.") from e
 
+            self._add_missing_host_context(context)
+            if context["WHAT"] == "SERVICE":
+                self._add_missing_service_context(context)
+
             return (
                 context,
                 notification_test(
@@ -823,7 +832,58 @@ class ModeNotifications(ABCNotificationsMode):
             )
         return None, None
 
-    def _show_no_fallback_contact_warning(self):
+    def _add_missing_host_context(self, context: NotificationContext) -> None:
+        """We don't want to transport all possible informations via HTTP vars
+        so we enrich the context after fetching all user defined options"""
+        hostname = context["HOSTNAME"]
+        resp = sites.live().query(
+            "GET hosts\nColumns: custom_variable_names custom_variable_values groups contact_groups\nFilter: host_name = %s\n"
+            % hostname
+        )
+        if len(resp) < 1:
+            raise MKUserError(
+                None,
+                _("Host '%s' is not known in the activated monitoring configuration") % hostname,
+            )
+
+        self._set_custom_variables(context, resp, "HOST")
+        context["HOSTGROUPNAMES"] = ",".join(resp[0][2])
+        context["HOSTCONTACTGROUPNAMES"] = ",".join(resp[0][3])
+
+    def _set_custom_variables(
+        self,
+        context: NotificationContext,
+        resp: LivestatusResponse,
+        prefix: Literal["HOST", "SERVICE"],
+    ) -> None:
+        custom_vars = dict(zip(resp[0][0], resp[0][1]))
+        for key, value in custom_vars.items():
+            context[f"{prefix}_{key}"] = value
+            # TODO in the context of a real notification, some variables are
+            # set two times. Why?!
+            # e.g. event_match_hosttags would not match with "_" set while
+            # user defined custom attributes would not match without.
+            # For now we just set both.
+            context[f"{prefix}{key}"] = value
+
+    def _add_missing_service_context(self, context: NotificationContext) -> None:
+        hostname = context["HOSTNAME"]
+        resp = sites.live().query(
+            "GET services\nColumns: custom_variable_names custom_variable_values groups contact_groups check_command\nFilter: host_name = %s\nFilter: service_description = %s"
+            % (hostname, context["SERVICEDESC"])
+        )
+        if len(resp) < 1:
+            raise MKUserError(
+                None,
+                _("Host '%s' is not known in the activated monitoring configuration") % hostname,
+            )
+
+        self._set_custom_variables(context, resp, "SERVICE")
+        context["SERVICEGROUPNAMES"] = ",".join(resp[0][2])
+        context["SERVICECONTACTGROUPNAMES"] = ",".join(resp[0][3])
+        context["SERVICECHECKCOMMAND"] = resp[0][4]
+
+    def _show_no_fallback_contact_warning(self) -> None:
         if not self._fallback_mail_contacts_configured():
             url = "wato.py?mode=edit_configvar&varname=notification_fallback_email"
             html.show_warning(
@@ -838,7 +898,7 @@ class ModeNotifications(ABCNotificationsMode):
                 % url
             )
 
-    def _fallback_mail_contacts_configured(self):
+    def _fallback_mail_contacts_configured(self) -> bool:
         current_settings = load_configuration_settings()
         if current_settings.get("notification_fallback_email"):
             return True
@@ -849,7 +909,7 @@ class ModeNotifications(ABCNotificationsMode):
 
         return False
 
-    def _show_bulk_notifications(self):
+    def _show_bulk_notifications(self) -> None:
         if self._show_bulks:
             # Warn if there are unsent bulk notifications
             if not self._render_bulks(only_ripe=False):
@@ -858,7 +918,7 @@ class ModeNotifications(ABCNotificationsMode):
             # Warn if there are unsent bulk notifications
             self._render_bulks(only_ripe=True)
 
-    def _render_bulks(self, only_ripe) -> bool:  # type: ignore[no-untyped-def]
+    def _render_bulks(self, only_ripe: bool) -> bool:
         bulks = notification_get_bulks(only_ripe).result
         if not bulks:
             return False
@@ -973,7 +1033,7 @@ class ModeNotifications(ABCNotificationsMode):
                     last_state = {"OK": "0", "WARNING": "1", "CRITICAL": "2", "UNKNOWN": "3"}[
                         last_state_name
                     ]
-                    state = context["HOSTSTATEID"]
+                    state = context["SERVICESTATEID"]
                     state_name = context["SERVICESTATE"]
                 else:
                     css = "state hstate hstate"
@@ -1012,7 +1072,7 @@ class ModeNotifications(ABCNotificationsMode):
         if analyse is not None:
             self._show_resulting_notifications(result=analyse)
 
-    def _show_notification_backlog(self):
+    def _show_notification_backlog(self) -> None:
         """Show recent notifications. We can use them for rule analysis"""
         if not self._show_backlog:
             return
@@ -1121,9 +1181,11 @@ class ModeNotifications(ABCNotificationsMode):
     def _add_plugin_output_cells(self, table: Table, context: NotificationContext) -> None:
         output = context.get("SERVICEOUTPUT", context.get("HOSTOUTPUT", ""))
         table.cell(
-            _("Plugin output"),
+            _("Plug-in output"),
             cmk.gui.view_utils.format_plugin_output(
-                output, shall_escape=active_config.escape_plugin_output
+                output,
+                request=request,
+                shall_escape=active_config.escape_plugin_output,
             ),
         )
 
@@ -1146,7 +1208,6 @@ class ModeNotifications(ABCNotificationsMode):
             html.td(val)
         html.close_table()
 
-    # TODO: Refactor this
     def _show_rules(self, analyse: NotifyAnalysisInfo | None) -> None:
         start_nr = 0
         rules = self._get_notification_rules()
@@ -1177,17 +1238,20 @@ class ModeNotifications(ABCNotificationsMode):
                 if contact.startswith("mailto:"):
                     contact = contact[7:]  # strip of fake-contact mailto:-prefix
                 table.cell(_("Recipient"), contact)
-                table.cell(_("Plugin"), self._vs_notification_scripts().value_to_html(plugin))
-                table.cell(_("Plugin parameters"), ", ".join(parameters))
+                table.cell(_("Plug-in"), self._vs_notification_scripts().value_to_html(plugin))
+                table.cell(_("Plug-in parameters"), ", ".join(parameters))
                 table.cell(_("Bulking"))
                 if bulk:
                     html.write_text(_("Time horizon") + ": ")
-                    html.write_text(Age().value_to_html(bulk["interval"]))
+                    if is_always_bulk(bulk):
+                        html.write_text(Age().value_to_html(bulk["interval"]))
+                    else:
+                        html.write_text(Age().value_to_html(0))
                     html.write_text(", %s: %d" % (_("Maximum count"), bulk["count"]))
                     html.write_text(", %s " % (_("group by")))
                     html.write_text(self._vs_notification_bulkby().value_to_html(bulk["groupby"]))
 
-    def _vs_notification_scripts(self):
+    def _vs_notification_scripts(self) -> DropdownChoice:
         return DropdownChoice(
             title=_("Notification Script"),
             choices=notification_script_choices,
@@ -1219,7 +1283,9 @@ class ModeNotifications(ABCNotificationsMode):
         return Dictionary(
             elements=[
                 (
-                    "hostname_choice",
+                    # we use the already existing logic for the host aware
+                    # service selection. It needs "_hostname_hint" as suffix
+                    "on_hostname_hint",
                     MonitoredHostname(
                         title=_("Host"),
                         strict="True",
@@ -1229,7 +1295,9 @@ class ModeNotifications(ABCNotificationsMode):
                     ),
                 ),
                 (
-                    "service_choice",
+                    # we use the already existing logic for the host aware
+                    # service selection. It needs "_service_hint" as suffix
+                    "on_service_hint",
                     MonitoredServiceDescription(
                         title=_("Service"),
                         autocompleter=ContextAutocompleterConfig(
@@ -1294,7 +1362,7 @@ class ModeNotifications(ABCNotificationsMode):
                 (
                     "plugin_output",
                     TextInput(
-                        title=_("Plugin output"),
+                        title=_("Plug-in output"),
                         placeholder=_("This is a notification test"),
                         size=46,
                     ),
@@ -1308,7 +1376,8 @@ class ModeNotifications(ABCNotificationsMode):
         return Checkbox(
             title=_("Dispatch notification"),
             label=_(
-                "Send out notification according to notification rules (uncheck to avoid spam)"
+                "Send out HTML/ASCII Email notification according "
+                "to notification rules (uncheck to avoid spam)"
             ),
             default_value=False,
         )
@@ -1377,9 +1446,9 @@ class ModeNotifications(ABCNotificationsMode):
 
     def _get_default_options(self, hostname: str | None, servicename: str | None) -> dict[str, str]:
         if hostname and servicename:
-            return {"hostname_choice": hostname, "service_choice": servicename}
+            return {"on_hostname_hint": hostname, "on_service_hint": servicename}
         if hostname:
-            return {"hostname_choice": hostname}
+            return {"on_hostname_hint": hostname}
         return {}
 
     def _ensure_correct_default_test_options(self) -> None:
@@ -1397,15 +1466,15 @@ class ModeNotifications(ABCNotificationsMode):
             )
 
 
-def _validate_general_opts(value, varprefix):
-    if not value["hostname_choice"]:
+def _validate_general_opts(value: dict, varprefix: str) -> None:
+    if not value["on_hostname_hint"]:
         raise MKUserError(
-            f"{varprefix}_p_hostname_choice", _("Please provide a hostname to test with.")
+            f"{varprefix}_p_on_hostname_hint", _("Please provide a hostname to test with.")
         )
 
-    if request.has_var("_test_service_notifications") and not value["service_choice"]:
+    if request.has_var("_test_service_notifications") and not value["on_service_hint"]:
         raise MKUserError(
-            f"{varprefix}_p_service_choice",
+            f"{varprefix}_p_on_service_hint",
             _("If you want to test service notifications, please provide a service to test with."),
         )
 
@@ -1479,10 +1548,12 @@ class ABCUserNotificationsMode(ABCNotificationsMode):
         )
 
 
-def _get_notification_sync_sites():
+def _get_notification_sync_sites() -> list[SiteId]:
     # Astroid 2.x bug prevents us from using NewType https://github.com/PyCQA/pylint/issues/2296
     # pylint: disable=not-an-iterable
-    return sorted(site_id for site_id in wato_slave_sites() if not site_is_local(site_id))
+    return sorted(
+        site_id for site_id in wato_slave_sites() if not site_is_local(active_config, site_id)
+    )
 
 
 class ModeUserNotifications(ABCUserNotificationsMode):
@@ -1506,8 +1577,7 @@ class ModeUserNotifications(ABCUserNotificationsMode):
 
     @overload
     @classmethod
-    def mode_url(cls, **kwargs: str) -> str:
-        ...
+    def mode_url(cls, **kwargs: str) -> str: ...
 
     @classmethod
     def mode_url(cls, **kwargs: str) -> str:
@@ -1584,7 +1654,7 @@ class ModePersonalUserNotifications(ABCUserNotificationsMode):
         super().__init__()
         user.need_permission("general.edit_notifications")
 
-    def main_menu(self):
+    def main_menu(self) -> MegaMenu:
         return mega_menu_registry.menu_user()
 
     def page_menu(self, breadcrumb: Breadcrumb) -> PageMenu:
@@ -1619,7 +1689,7 @@ class ModePersonalUserNotifications(ABCUserNotificationsMode):
     def _user_id(self):
         return user.id
 
-    def _add_change(self, log_what, log_text):
+    def _add_change(self, log_what: str, log_text: str) -> None:
         if has_wato_slave_sites():
             self._start_async_repl = True
             _audit_log.log_audit(log_what, log_text)
@@ -1663,7 +1733,6 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
         """Optional method to update the rule after editing with the valuespec"""
         return rule
 
-    # TODO: Refactor this
     def _from_vars(self) -> None:
         self._edit_nr = request.get_integer_input_mandatory("edit", -1)
         self._clone_nr = request.get_integer_input_mandatory("clone", -1)
@@ -1686,11 +1755,10 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
             except IndexError:
                 raise MKUserError(None, _("This %s does not exist.") % "notification rule")
 
-    def _valuespec(self):
+    def _valuespec(self) -> Dictionary:
         return self._vs_notification_rule(self._user_id())
 
-    # TODO: Refactor this mess
-    def _vs_notification_rule(self, userid=None):
+    def _vs_notification_rule(self, userid: UserId | None) -> Dictionary:
         if userid:
             contact_headers: list[tuple[str, list[str]] | tuple[str, str, list[str]]] = []
             section_contacts = []
@@ -1836,7 +1904,7 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
                     label=_("Bulk up to"),
                     unit=_("Notifications"),
                     help=_(
-                        "At most that many Notifications are kept back for bulking. A value of "
+                        "At most that many notifications are kept back for bulking. A value of "
                         "1 essentially turns off notification bulking."
                     ),
                     default_value=1000,
@@ -2071,6 +2139,7 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
                 "contact_match_macros",
                 "contact_match_groups",
             ],
+            hidden_keys=["contact_emails"] if edition() == Edition.CSE else [],
             headers=headers_part1 + contact_headers + headers_part2,
             render="form",
             form_narrow=True,
@@ -2106,7 +2175,7 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
             choices.append((script_name, title, vs_alternative))
         return choices
 
-    def _validate_notification_rule(self, rule, varprefix):
+    def _validate_notification_rule(self, rule: dict, varprefix: str) -> None:
         if "bulk" in rule and rule["notify_plugin"][1] is None:
             raise MKUserError(
                 varprefix + "_p_bulk_USE",
@@ -2126,7 +2195,7 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
                     varprefix + "_p_notify_plugin",
                     _(
                         "Legacy ASCII Emails do not support bulking. You can either disable notification "
-                        "bulking or choose another notification plugin which allows bulking."
+                        "bulking or choose another notification plug-in which allows bulking."
                     ),
                 )
 
@@ -2146,8 +2215,10 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
             return self._back_mode()
 
         vs = self._valuespec()
-        self._rule = self._rule_from_valuespec(vs.from_html_vars("rule"))
-        vs.validate_value(self._rule, "rule")
+        raw_value = vs.from_html_vars("rule")
+        vs.validate_value(raw_value, "rule")
+        # There is currently no way around this as we don't have typing support from the VS
+        self._rule = self._rule_from_valuespec(cast(EventRule, raw_value))
 
         if self._new and self._clone_nr >= 0:
             self._rules[self._clone_nr : self._clone_nr] = [self._rule]
@@ -2173,7 +2244,7 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
 
         with html.form_context("rule", method="POST"):
             vs = self._valuespec()
-            vs.render_input("rule", self._rule)
+            vs.render_input("rule", dict(self._rule))
             vs.set_focus("rule")
             forms.end()
             html.hidden_fields()
@@ -2195,10 +2266,12 @@ class ModeEditNotificationRule(ABCEditNotificationRuleMode):
         return ModeNotifications
 
     def _load_rules(self) -> list[EventRule]:
-        return load_notification_rules(lock=transactions.is_transaction())
+        if transactions.is_transaction():
+            return NotificationRuleConfigFile().load_for_modification()
+        return NotificationRuleConfigFile().load_for_reading()
 
     def _save_rules(self, rules: list[EventRule]) -> None:
-        save_notification_rules(rules)
+        NotificationRuleConfigFile().save(rules)
 
     def _user_id(self):
         return None

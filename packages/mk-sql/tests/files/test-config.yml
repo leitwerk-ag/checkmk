@@ -40,19 +40,20 @@ mssql:
   #    then you must also describe it in `main.instances`
   #
   main: # mandatory, defines main SQL check to be executed
-    system: # optional
-      max_connections: 16 # optional, default: absent, 16
-      max_queries: 64 # optional, default: absent, 64
+    options: # optional
+      max_connections: 6 # optional, default: absent, 6
+      max_queries: 16 # optional, for the future use
     authentication: # mandatory
       username: "foo" # mandatory
       password: "bar" # optional
       type: "sql_server" # optional, default: "integrated", values: sql_server, windows, token and integrated(current windows user)
       access_token: "baz" # optional, no default
     connection: # optional
-      hostname: "localhost" # optional, default: "localhost" if type of authentication is integrated value is assumed as a localhost
+      hostname: "localhost" # optional, default: "localhost", empty string: "localhost"
       failoverpartner: "localhost2" # optional, no default
       port: 1433 # optional, default: 1433
       socket: 'C:\path\to\file' # optional, no default
+      trust_server_certificate: yes # optional, default: yes value is ignored if tls presented
       tls: # optional
         ca: 'C:\path\to\file' # mandatory
         client_certificate: 'C:\path\to\file' # mandatory
@@ -97,10 +98,10 @@ mssql:
     mode: "port" # optional, default: "port" / can be "socket", "port" or "special"
   configs: # optional, defines additional SQL checks to be executed
     - main:
-      system: # optional, if absent will use main
-      authentication: # optional, if absent will use main
-        username: "foo" # mandatory
-      connection: # optional, if absent will use main
-        hostname: "agent" # optional, default: "localhost"
-      instances: # optional, describes how to monitor/access instances, both detected and non-detectable
-        - sid: "SQLEXPRESS" # mandatory
+        options: # optional, if absent will use main
+        authentication: # optional, if absent will use main
+          username: "foo" # mandatory
+        connection: # optional, if absent will use main
+          hostname: "agent" # optional, default: "localhost", empty string: "localhost"
+        instances: # optional, describes how to monitor/access instances, both detected and non-detectable
+          - sid: "SQLEXPRESS" # mandatory

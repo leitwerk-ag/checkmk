@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# pylint: disable=protected-access
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -79,6 +81,7 @@ class TestPageAutomation:
         request.set_var("timeout", mk_repr(None).decode())
 
     @pytest.mark.usefixtures(
+        "request_context",
         "result_type_registry",
         "check_mk_local_automation_serialized",
         "setup_request",
@@ -95,6 +98,7 @@ class TestPageAutomation:
             assert response.get_data() == b"((1, 2), 'this field was not sent by version N-1')"
 
     @pytest.mark.usefixtures(
+        "request_context",
         "result_type_registry",
         "check_mk_local_automation_serialized",
         "setup_request",
@@ -118,6 +122,7 @@ class TestPageAutomation:
         ],
     )
     @pytest.mark.usefixtures(
+        "request_context",
         "result_type_registry",
         "check_mk_local_automation_serialized",
         "setup_request",

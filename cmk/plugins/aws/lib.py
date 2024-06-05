@@ -9,8 +9,21 @@ from dataclasses import dataclass
 from typing import Any
 
 from cmk.agent_based.v1 import check_levels
-from cmk.agent_based.v2 import IgnoreResultsError, Metric, render, Result, Service, State
-from cmk.agent_based.v2.type_defs import CheckResult, DiscoveryResult, StringTable
+from cmk.agent_based.v2 import (
+    CheckResult,
+    DiscoveryResult,
+    HostLabel,
+    HostLabelGenerator,
+    IgnoreResultsError,
+    Metric,
+    render,
+    Result,
+    Service,
+    State,
+    StringTable,
+)
+from cmk.plugins.aws.constants import AWSRegions
+from cmk.plugins.lib.labels import custom_tags_to_valid_labels
 
 GenericAWSSection = Sequence[Any]
 AWSSectionMetrics = Mapping[str, Mapping[str, Any]]
@@ -59,6 +72,34 @@ def discover_lambda_functions(
         return
     for lambda_function in section_aws_lambda_summary:
         yield Service(item=lambda_function)
+
+
+def parse_aws_labels(string_table: StringTable) -> Mapping[str, str]:
+    """Load json dicts.
+
+    Example:
+
+        <<<ec2_labels:sep(0)>>>
+        {"tier": "control-plane", "component": "kube-scheduler"}
+
+    """
+    labels = {}
+    for line in string_table:
+        labels.update(json.loads(line[0]))
+    return labels
+
+
+def aws_host_labels(section: Mapping[str, str]) -> HostLabelGenerator:
+    """Generate aws host labels.
+
+    Labels:
+        cmk/aws/tag/{key}:{value}:
+            These labels are yielded for each tag of an AWS resource
+            that is monitored as its own host.
+    """
+    labels = custom_tags_to_valid_labels(section)
+    for key, value in labels.items():
+        yield HostLabel(f"cmk/aws/tag/{key}", value)
 
 
 def parse_aws(string_table: StringTable) -> GenericAWSSection:
@@ -218,7 +259,6 @@ def discover_aws_generic_single(
     """
     if requirement(required_metric in section for required_metric in required_metrics):
         yield Service()
-    return []
 
 
 def get_number_with_precision(
@@ -262,6 +302,17 @@ def function_arn_to_item(function_arn: str) -> str:
         if len(splitted) == 8
         else f"{splitted[6]} [{splitted[3]}]"
     )
+
+
+def aws_region_to_monitor() -> list[tuple[str, str]]:
+    def key(regionid_display: tuple[str, str]) -> str:
+        return regionid_display[1]
+
+    regions_by_display_order = [
+        *sorted((r for r in AWSRegions if "GovCloud" not in r[1]), key=key),
+        *sorted((r for r in AWSRegions if "GovCloud" in r[1]), key=key),
+    ]
+    return [(id_, " | ".join((region, id_))) for id_, region in regions_by_display_order]
 
 
 def get_region_from_item(item: str) -> str:

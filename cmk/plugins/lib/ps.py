@@ -20,10 +20,13 @@ from typing import Any, Literal
 
 from cmk.agent_based.v1 import check_levels
 from cmk.agent_based.v2 import (
+    CheckResult,
+    DiscoveryResult,
     get_average,
     get_rate,
     get_value_store,
     HostLabel,
+    HostLabelGenerator,
     IgnoreResultsError,
     Metric,
     render,
@@ -31,7 +34,6 @@ from cmk.agent_based.v2 import (
     Service,
     State,
 )
-from cmk.agent_based.v2.type_defs import CheckResult, DiscoveryResult, HostLabelGenerator
 
 from . import cpu, memory
 
@@ -351,7 +353,7 @@ class ProcessAggregator:
         self.processes.append(process)
 
     def core_weight(self, is_win):
-        cpu_rescale_max = self.params.get("cpu_rescale_max")
+        cpu_rescale_max = self.params["cpu_rescale_max"]
 
         if any(
             (
@@ -376,14 +378,12 @@ class ProcessAggregator:
         # process.
         if "/" in process_info.cputime:
             elapsed_text = process_info.cputime.split("/")[1]
+        # uptime is a windows only value, introduced in Werk 4029. For future consistency should be
+        # moved to the cputime entry and separated by a /
+        elif process_info.uptime:
+            elapsed_text = process_info.uptime
         else:
-            # uptime is a windows only value, introduced in Werk 4029. For
-            # future consistency should be moved to the cputime entry and
-            # separated by a /
-            if process_info.uptime:
-                elapsed_text = process_info.uptime
-            else:
-                elapsed_text = None
+            elapsed_text = None
 
         if elapsed_text:
             elapsed = parse_ps_time(elapsed_text)
@@ -558,7 +558,7 @@ def unused_value_remover(
 ) -> Generator[dict[str, tuple[float, float]], None, None]:
     """Remove all values that remain unchanged
 
-    This plugin uses the process IDs in the keys to persist values.
+    This plug-in uses the process IDs in the keys to persist values.
     This would lead to a lot of orphaned values if we used the value store directly.
     Thus we use a single dictionary and only store the values that have been used.
     """

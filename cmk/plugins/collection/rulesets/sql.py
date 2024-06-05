@@ -2,88 +2,127 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
-import cmk.rulesets.v1.form_specs.basic
-from cmk.rulesets.v1 import form_specs, Localizable, rule_specs, validators
+
+from collections.abc import Mapping
+from typing import Literal
+
+from cmk.rulesets.v1 import form_specs, Help, Label, rule_specs, Title
+from cmk.rulesets.v1.form_specs import validators
 
 
-def _form_active_checks_sql() -> form_specs.composed.Dictionary:
-    return form_specs.composed.Dictionary(
-        help_text=Localizable(
+def _migrate_port_spec(x: object) -> tuple[Literal["explicit"], int] | tuple[Literal["macro"], str]:
+    """
+    >>> _migrate_port_spec(1234)
+    ('explicit', 1234)
+    >>> _migrate_port_spec(("explicit", 1234))
+    ('explicit', 1234)
+    >>> _migrate_port_spec(("macro", "$MYSQL_PORT$"))
+    ('macro', '$MYSQL_PORT$')
+    """
+    match x:
+        case "explicit", int(value):
+            return "explicit", value
+        case "macro", str(value):
+            return "macro", value
+        case int(value):
+            return "explicit", value
+    raise ValueError(f"Invalid value {x!r} for port spec")
+
+
+def _port_spec() -> form_specs.CascadingSingleChoice:
+    return form_specs.CascadingSingleChoice(
+        title=Title("Database port"),
+        help_text=Help("The port the DBMS listens to"),
+        elements=(
+            form_specs.CascadingSingleChoiceElement(
+                name="explicit",
+                title=Title("Explicit port number"),
+                parameter_form=form_specs.Integer(custom_validate=(validators.NetworkPort(),)),
+            ),
+            form_specs.CascadingSingleChoiceElement(
+                name="macro",
+                title=Title("Use macro to determine port number"),
+                parameter_form=form_specs.String(
+                    custom_validate=(validators.LengthInRange(min_value=1),),
+                    help_text=Help(
+                        "The name of the macro (including the '$'s) which contains the port number. "
+                        "If the macro is not defined or does not represent an integer, config generation will fail."
+                    ),
+                    prefill=form_specs.InputHint("$MYSQL_PORT$"),
+                    macro_support=True,
+                ),
+            ),
+        ),
+        prefill=form_specs.DefaultValue("explicit"),
+        migrate=_migrate_port_spec,
+    )
+
+
+def _form_active_checks_sql() -> form_specs.Dictionary:
+    return form_specs.Dictionary(
+        help_text=Help(
             "This check connects to the specified database, sends a custom SQL-statement "
             "or starts a procedure, and checks that the result."
             " Please refer to the man page of the active check <tt>check_sql</tt> for details."
         ),
         elements={
-            "description": form_specs.composed.DictElement(
-                parameter_form=form_specs.basic.Text(
-                    title=Localizable("Service Description"),
-                    help_text=Localizable("The name of this active service to be displayed."),
-                    custom_validate=validators.DisallowEmpty(),
+            "description": form_specs.DictElement[str](
+                parameter_form=form_specs.String(
+                    title=Title("Service sescription"),
+                    help_text=Help("The name of this active service to be displayed."),
+                    custom_validate=(validators.LengthInRange(min_value=1),),
+                    macro_support=True,
                 ),
                 required=True,
             ),
-            "dbms": form_specs.composed.DictElement(
-                parameter_form=cmk.rulesets.v1.form_specs.basic.SingleChoice(
-                    title=Localizable("Type of Database"),
+            "dbms": form_specs.DictElement[str](
+                parameter_form=form_specs.SingleChoice(
+                    title=Title("Type of database"),
                     elements=[
-                        cmk.rulesets.v1.form_specs.basic.SingleChoiceElement(
-                            "mysql", Localizable("MySQL")
-                        ),
-                        cmk.rulesets.v1.form_specs.basic.SingleChoiceElement(
-                            "postgres", Localizable("PostgreSQL")
-                        ),
-                        cmk.rulesets.v1.form_specs.basic.SingleChoiceElement(
-                            "mssql", Localizable("MSSQL")
-                        ),
-                        cmk.rulesets.v1.form_specs.basic.SingleChoiceElement(
-                            "oracle", Localizable("Oracle")
-                        ),
-                        cmk.rulesets.v1.form_specs.basic.SingleChoiceElement(
-                            "db2", Localizable("DB2")
-                        ),
-                        cmk.rulesets.v1.form_specs.basic.SingleChoiceElement(
-                            "sqlanywhere", Localizable("SQLAnywhere")
-                        ),
+                        form_specs.SingleChoiceElement("mysql", Title("MySQL")),
+                        form_specs.SingleChoiceElement("postgres", Title("PostgreSQL")),
+                        form_specs.SingleChoiceElement("mssql", Title("MSSQL")),
+                        form_specs.SingleChoiceElement("oracle", Title("Oracle")),
+                        form_specs.SingleChoiceElement("db2", Title("DB2")),
+                        form_specs.SingleChoiceElement("sqlanywhere", Title("SQLAnywhere")),
                     ],
-                    prefill_selection="postgres",
+                    prefill=form_specs.DefaultValue("postgres"),
                 ),
                 required=True,
             ),
-            "port": form_specs.composed.DictElement(
-                parameter_form=form_specs.basic.Integer(
-                    title=Localizable("Database Port"),
-                    help_text=Localizable("The port the DBMS listens to"),
-                    custom_validate=validators.NetworkPort(),
-                ),
+            "port": form_specs.DictElement(
+                parameter_form=_port_spec(),
                 required=False,
             ),
-            "name": form_specs.composed.DictElement(
-                parameter_form=form_specs.basic.Text(
-                    title=Localizable("Database Name"),
-                    help_text=Localizable("The name of the database on the DBMS"),
-                    custom_validate=validators.DisallowEmpty(),
+            "name": form_specs.DictElement[str](
+                parameter_form=form_specs.String(
+                    title=Title("Database name"),
+                    help_text=Help("The name of the database on the DBMS"),
+                    custom_validate=(validators.LengthInRange(min_value=1),),
+                    macro_support=True,
                 ),
                 required=True,
             ),
-            "user": form_specs.composed.DictElement(
-                parameter_form=form_specs.basic.Text(
-                    title=Localizable("Database User"),
-                    help_text=Localizable("The username used to connect to the database"),
-                    custom_validate=validators.DisallowEmpty(),
+            "user": form_specs.DictElement[str](
+                parameter_form=form_specs.String(
+                    title=Title("Database user"),
+                    help_text=Help("The username used to connect to the database"),
+                    custom_validate=(validators.LengthInRange(min_value=1),),
                 ),
                 required=True,
             ),
-            "password": form_specs.composed.DictElement(
-                parameter_form=form_specs.preconfigured.Password(
-                    title=Localizable("Database Password"),
-                    help_text=Localizable("The password used to connect to the database"),
+            "password": form_specs.DictElement(
+                parameter_form=form_specs.Password(
+                    title=Title("Database password"),
+                    help_text=Help("The password used to connect to the database"),
+                    migrate=form_specs.migrate_to_password,
                 ),
                 required=True,
             ),
-            "sql": form_specs.composed.DictElement(
-                parameter_form=form_specs.basic.MultilineText(
-                    title=Localizable("Query or SQL statement"),
-                    help_text=Localizable(
+            "sql": form_specs.DictElement[str](
+                parameter_form=form_specs.MultilineText(
+                    title=Title("Query or SQL statement"),
+                    help_text=Help(
                         "The SQL-statement or procedure name which is executed on the DBMS. It must return "
                         "a result table with one row and at least two columns. The first column must be "
                         "an integer and is interpreted as the state (0 is OK, 1 is WARN, 2 is CRIT). "
@@ -92,15 +131,15 @@ def _form_active_checks_sql() -> form_specs.composed.Dictionary:
                         "second column is used as check output. The third column is optional and can "
                         "contain performance data."
                     ),
-                    custom_validate=validators.DisallowEmpty(),
+                    custom_validate=(validators.LengthInRange(min_value=1),),
                     monospaced=True,
                 ),
                 required=True,
             ),
-            "procedure": form_specs.composed.DictElement(
-                parameter_form=form_specs.composed.Dictionary(
-                    title=Localizable("Use procedure call instead of SQL statement"),
-                    help_text=Localizable(
+            "procedure": form_specs.DictElement[Mapping[str, object]](
+                parameter_form=form_specs.Dictionary(
+                    title=Title("Use procedure call instead of SQL statement"),
+                    help_text=Help(
                         "If you activate this option, a name of a stored "
                         "procedure is used instead of an SQL statement. "
                         "The procedure should return one output variable, "
@@ -108,17 +147,17 @@ def _form_active_checks_sql() -> form_specs.composed.Dictionary:
                         "are required, they may be specified below."
                     ),
                     elements={
-                        "useprocs": form_specs.composed.DictElement(
-                            parameter_form=form_specs.basic.FixedValue(
+                        "useprocs": form_specs.DictElement[bool](
+                            parameter_form=form_specs.FixedValue(
                                 value=True,
-                                label=Localizable("procedure call is used"),
+                                label=Label("procedure call is used"),
                             ),
                             required=True,
                         ),
-                        "input": form_specs.composed.DictElement(
-                            parameter_form=form_specs.basic.Text(
-                                title=Localizable("Input Parameters"),
-                                help_text=Localizable(
+                        "input": form_specs.DictElement[str](
+                            parameter_form=form_specs.String(
+                                title=Title("Input parameters"),
+                                help_text=Help(
                                     "Input parameters, if required by the database procedure. "
                                     "If several parameters are required, use commas to separate them."
                                 ),
@@ -129,53 +168,52 @@ def _form_active_checks_sql() -> form_specs.composed.Dictionary:
                 ),
                 required=False,
             ),
-            # TODO: migrate to form_specs.Levels after check_levels function has been implemented
-            "levels": form_specs.composed.DictElement(
-                parameter_form=form_specs.composed.TupleDoNotUseWillbeRemoved(
-                    title=Localizable("Upper levels for first output item"),
-                    elements=[
-                        form_specs.basic.Float(title=Localizable("Warning at")),
-                        form_specs.basic.Float(title=Localizable("Critical at")),
-                    ],
+            "levels": form_specs.DictElement[form_specs.SimpleLevelsConfigModel[float]](
+                parameter_form=form_specs.SimpleLevels[float](
+                    title=Title("Upper levels for first output item"),
+                    level_direction=form_specs.LevelDirection.UPPER,
+                    form_spec_template=form_specs.Float(),
+                    prefill_fixed_levels=form_specs.InputHint((0.0, 0.0)),
+                    migrate=form_specs.migrate_to_float_simple_levels,
                 ),
                 required=False,
             ),
-            # TODO: migrate to form_specs.Levels after check_levels function has been implemented
-            "levels_low": form_specs.composed.DictElement(
-                parameter_form=form_specs.composed.TupleDoNotUseWillbeRemoved(
-                    title=Localizable("Lower levels for first output item"),
-                    elements=[
-                        form_specs.basic.Float(title=Localizable("Warning below")),
-                        form_specs.basic.Float(title=Localizable("Critical below")),
-                    ],
+            "levels_low": form_specs.DictElement[form_specs.SimpleLevelsConfigModel[float]](
+                parameter_form=form_specs.SimpleLevels[float](
+                    title=Title("Lower levels for first output item"),
+                    level_direction=form_specs.LevelDirection.LOWER,
+                    form_spec_template=form_specs.Float(),
+                    prefill_fixed_levels=form_specs.InputHint((0.0, 0.0)),
+                    migrate=form_specs.migrate_to_float_simple_levels,
                 ),
                 required=False,
             ),
-            "perfdata": form_specs.composed.DictElement(
-                parameter_form=form_specs.basic.Text(
-                    title=Localizable("Performance Data"),
-                    help_text=Localizable(
+            "perfdata": form_specs.DictElement[str](
+                parameter_form=form_specs.String(
+                    title=Title("Performance data"),
+                    help_text=Help(
                         "Store output value into RRD database in a metric with this name."
                     ),
-                    prefill_value="performance_data",
-                    custom_validate=validators.DisallowEmpty(),
+                    prefill=form_specs.DefaultValue("performance_data"),
+                    custom_validate=(validators.LengthInRange(min_value=1),),
                 ),
                 required=False,
             ),
-            "text": form_specs.composed.DictElement(
-                parameter_form=form_specs.basic.Text(
-                    title=Localizable("Prefix text"),
-                    help_text=Localizable("Additional text prefixed to the output"),
-                    custom_validate=validators.DisallowEmpty(),
+            "text": form_specs.DictElement[str](
+                parameter_form=form_specs.String(
+                    title=Title("Prefix text"),
+                    help_text=Help("Additional text prefixed to the output"),
+                    custom_validate=(validators.LengthInRange(min_value=1),),
                 ),
                 required=False,
             ),
-            "host": form_specs.composed.DictElement(
-                parameter_form=form_specs.basic.Text(
-                    title=Localizable("DNS hostname or IP address"),
-                    help_text=Localizable(
+            "host": form_specs.DictElement[str](
+                parameter_form=form_specs.String(
+                    title=Title("DNS host name or IP address"),
+                    help_text=Help(
                         "This defaults to the host for which the active check is configured."
                     ),
+                    macro_support=True,
                 ),
                 required=False,
             ),
@@ -184,9 +222,8 @@ def _form_active_checks_sql() -> form_specs.composed.Dictionary:
 
 
 rule_spec_sql = rule_specs.ActiveCheck(
-    title=Localizable("Check SQL Database"),
+    title=Title("Check SQL database"),
     topic=rule_specs.Topic.DATABASES,
-    eval_type=rule_specs.EvalType.ALL,
     name="sql",
     parameter_form=_form_active_checks_sql,
 )

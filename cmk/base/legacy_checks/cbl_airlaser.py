@@ -90,9 +90,11 @@ def parse_cbl_airlaser(string_table):
     return string_table[0], {
         hwclass: {
             sensor: (
-                airlaser_status_names[int(data[hwclass][offset][0])]
-                if "Status" in sensor
-                else saveint(data[hwclass][offset][0]),
+                (
+                    airlaser_status_names[int(data[hwclass][offset][0])]
+                    if "Status" in sensor
+                    else saveint(data[hwclass][offset][0])
+                ),
                 sub_oid,
                 offset,
             )
@@ -130,15 +132,14 @@ def check_cbl_airlaser_hw(item, params, section):  # pylint: disable=too-many-br
             if sensor in ["psStatus48V", "psStatus230V"] and val == "warning":
                 state = max(state, 0)
 
+            elif val == "failure":
+                state = 2
+            elif val == "warning":
+                state = max(state, 1)
+            # go here if no explicit error occured,
+            # no handling undefined and not_installed
             else:
-                if val == "failure":
-                    state = 2
-                elif val == "warning":
-                    state = max(state, 1)
-                # go here if no explicit error occured,
-                # no handling undefined and not_installed
-                else:
-                    continue
+                continue
             if state > 0:
                 msgtxt = msgtxt + f"Sensor {sensor} {val}" + state * "!" + " "
 

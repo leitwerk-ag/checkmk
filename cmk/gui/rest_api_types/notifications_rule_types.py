@@ -6,49 +6,71 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, cast, Literal
-
-from typing_extensions import TypedDict
+from typing import cast, Literal, Required, TypedDict
 
 from cmk.utils.notify_types import (
-    BuiltInPluginNames,
-    BulkOutsideTimePeriodType,
+    AlwaysBulkParameters,
+    AsciiMailPluginName,
+    CaseState,
+    CaseStateStr,
+    CiscoPluginName,
     ConditionEventConsoleAlertsType,
     CustomPluginName,
     EmailBodyElementsType,
+    EmailFromOrTo,
     EventConsoleOption,
-    FromOrToType,
     GroupbyType,
     HostEventType,
     IlertAPIKey,
+    IlertPluginName,
+    IncidentState,
+    IncidentStateStr,
+    is_always_bulk,
+    is_auto_urlprefix,
+    is_manual_urlprefix,
+    is_timeperiod_bulk,
+    JiraPluginName,
+    MailPluginName,
     MatchRegex,
     MgmntPriorityType,
     MgmntUrgencyType,
+    MkeventdPluginName,
+    MSTeamsPluginName,
     NotifyBulkType,
+    OpsGeniePluginName,
     OpsGeniePriorityPValueType,
     OpsGeniePriorityStrType,
+    PagerdutyPluginName,
     PasswordType,
     PluginOptions,
     ProxyUrl,
+    PushoverPluginName,
     PushOverPriorityNumType,
     PushOverPriorityStringType,
     RegexModes,
     RoutingKeyType,
     ServiceEventType,
+    ServiceNowPluginName,
+    Signl4PluginName,
+    SlackPluginName,
+    SmsApiPluginName,
+    SmsPluginName,
+    SMTPAuthAttrs,
     SortOrder,
     SoundType,
+    SpectrumPluginName,
+    SplunkPluginName,
+    SyncDeliverySMTP,
     SysLogFacilityIntType,
     SysLogFacilityStrType,
     SyslogPriorityIntType,
     SysLogPriorityStrType,
+    TimeperiodBulkParameters,
     URLPrefix,
     WebHookUrl,
 )
 
-from cmk.ec.export import (  # pylint:disable=cmk-module-layer-violation
-    SyslogFacility,
-    SyslogPriority,
-)
+import cmk.ec.export as ec  # pylint: disable=cmk-module-layer-violation
 
 CheckboxState = Literal["enabled", "disabled"]
 
@@ -447,14 +469,10 @@ class CheckboxPushoverSound:
 
 
 # ----------------------------------------------------------------
-class API_AuthAttrs(TypedDict, total=False):
-    method: Literal["plaintext"]
-    password: str
-    user: str
 
 
 class API_AuthValueType(CheckboxStateType, total=False):
-    value: API_AuthAttrs
+    value: SMTPAuthAttrs
 
 
 class API_EnableSyncViaSMTPAttrs(TypedDict, total=False):
@@ -470,10 +488,10 @@ class API_EnableSyncViaSMTPValueType(CheckboxStateType, total=False):
 
 @dataclass
 class SMTPAuth:
-    value: API_AuthAttrs | None = None
+    value: SMTPAuthAttrs | None = None
 
     @classmethod
-    def from_mk_file_format(cls, data: API_AuthAttrs | None) -> SMTPAuth:
+    def from_mk_file_format(cls, data: SMTPAuthAttrs | None) -> SMTPAuth:
         return cls(value=data)
 
     @classmethod
@@ -489,7 +507,7 @@ class SMTPAuth:
             r["value"] = self.value
         return r
 
-    def to_mk_file_format(self) -> API_AuthAttrs | None:
+    def to_mk_file_format(self) -> SMTPAuthAttrs | None:
         if self.value is None:
             return None
 
@@ -497,76 +515,57 @@ class SMTPAuth:
 
 
 # ----------------------------------------------------------------
-class EnableSyncViaSMTPType(TypedDict, total=False):
-    auth: SMTPAuth
-    encryption: Literal["ssl_tls", "starttls"]
-    port: int
-    smarthosts: list[str]
 
 
 @dataclass
 class EnableSyncDeliveryViaSMTP:
-    value: EnableSyncViaSMTPType | None = None
+    value: SyncDeliverySMTP | None = None
 
     @classmethod
-    def from_mk_file_format(cls, data: dict[str, Any] | None) -> EnableSyncDeliveryViaSMTP:
-        if data is None:
-            return cls()
-
-        return cls(
-            value=EnableSyncViaSMTPType(
-                auth=SMTPAuth.from_mk_file_format(data.get("auth")),
-                encryption=data["encryption"],
-                port=data["port"],
-                smarthosts=data["smarthosts"],
-            )
-        )
+    def from_mk_file_format(cls, data: SyncDeliverySMTP | None) -> EnableSyncDeliveryViaSMTP:
+        return cls(value=data)
 
     @classmethod
     def from_api_request(cls, data: API_EnableSyncViaSMTPValueType) -> EnableSyncDeliveryViaSMTP:
         if data["state"] == "disabled":
-            return cls()
+            return cls(value=None)
 
         v = data["value"]
 
-        if "smarthosts" in v:
-            smarthosts = v["smarthosts"]
-            if len(v["smarthosts"]) > 2:
-                smarthosts = v["smarthosts"][:2]  # TODO only two allowed - set in schema
-        else:
-            smarthosts = []
+        smarthosts = v["smarthosts"]
+        if len(v["smarthosts"]) > 2:
+            smarthosts = v["smarthosts"][:2]  # TODO only two allowed - set in schema
 
-        value = EnableSyncViaSMTPType(
-            auth=SMTPAuth.from_api_request(v["auth"]),
-            encryption=v["encryption"],
+        value = SyncDeliverySMTP(
             port=v["port"],
             smarthosts=smarthosts,
         )
+
+        if (auth := SMTPAuth.from_api_request(v["auth"]).to_mk_file_format()) is not None:
+            value["auth"] = auth
+
+        if (encryption := v.get("encryption")) is not None:
+            value["encryption"] = encryption
+
         return cls(value=value)
 
     def api_response(self) -> API_EnableSyncViaSMTPValueType:
         state: CheckboxState = "disabled" if self.value is None else "enabled"
         r: API_EnableSyncViaSMTPValueType = {"state": state}
+
         if self.value is not None:
             r["value"] = {
-                "auth": self.value["auth"].api_response(),
-                "encryption": self.value["encryption"],
+                "auth": SMTPAuth.from_mk_file_format(self.value.get("auth")).api_response(),
                 "port": self.value["port"],
                 "smarthosts": self.value["smarthosts"],
             }
+            if (encryption := self.value.get("encryption")) is not None:
+                r["value"]["encryption"] = encryption
+
         return r
 
-    def to_mk_file_format(self) -> Mapping[str, Any] | None:
-        if self.value is None:
-            return None
-
-        r = {
-            "auth": self.value["auth"].to_mk_file_format(),
-            "encryption": self.value["encryption"],
-            "port": self.value["port"],
-            "smarthosts": self.value["smarthosts"],
-        }
-        return {k: v for k, v in r.items() if v is not None}
+    def to_mk_file_format(self) -> SyncDeliverySMTP | None:
+        return self.value
 
 
 # ----------------------------------------------------------------
@@ -747,15 +746,15 @@ class RestrictToNotificationNumbers:
 
 # ----------------------------------------------------------------
 class FromAndToEmailFieldsAPIValueType(CheckboxStateType, total=False):
-    value: FromOrToType
+    value: EmailFromOrTo
 
 
 @dataclass
 class FromAndToEmailFields:
-    value: FromOrToType | None = None
+    value: EmailFromOrTo | None = None
 
     @classmethod
-    def from_mk_file_format(cls, data: FromOrToType | None) -> FromAndToEmailFields:
+    def from_mk_file_format(cls, data: EmailFromOrTo | None) -> FromAndToEmailFields:
         return cls(value=data)
 
     @classmethod
@@ -776,7 +775,7 @@ class FromAndToEmailFields:
         }
         return r
 
-    def to_mk_file_format(self) -> FromOrToType | None:
+    def to_mk_file_format(self) -> EmailFromOrTo | None:
         return self.value
 
     def disable(self) -> None:
@@ -1044,7 +1043,7 @@ class CheckboxThrottlePeriodicNotifications:
 # ----------------------------------------------------------------
 FACILITIES = cast(
     Mapping[SysLogFacilityIntType, SysLogFacilityStrType],
-    SyslogFacility.NAMES,
+    ec.SyslogFacility.NAMES,
 )
 
 
@@ -1077,7 +1076,7 @@ class CheckboxSysLogFacility:
 
 
 # ----------------------------------------------------------------
-PRIORITIES = cast(Mapping[SyslogPriorityIntType, SysLogPriorityStrType], SyslogPriority.NAMES)
+PRIORITIES = cast(Mapping[SyslogPriorityIntType, SysLogPriorityStrType], ec.SyslogPriority.NAMES)
 
 
 @dataclass
@@ -1158,11 +1157,12 @@ class CheckboxURLPrefix:
         if self.value is None:
             return r
 
-        if self.value.get("automatic"):
+        if is_auto_urlprefix(self.value):
             r["value"] = {"option": "automatic", "schema": self.value["automatic"]}
-            return r
 
-        r["value"] = {"option": "manual", "url": self.value["manual"]}
+        if is_manual_urlprefix(self.value):
+            r["value"] = {"option": "manual", "url": self.value["manual"]}
+
         return r
 
     def to_mk_file_format(self) -> URLPrefix | None:
@@ -1174,13 +1174,28 @@ class CheckboxURLPrefix:
 
 
 # ----------------------------------------------------------------
-class HttpProxyAPIAttrs(TypedDict, total=False):
-    option: Literal["no_proxy", "environment", "url"]
+
+
+class HttpProxyAPINoProxy(TypedDict):
+    option: Literal["no_proxy"]
+
+
+class HttpProxyAPIEnvironment(TypedDict):
+    option: Literal["environment"]
+
+
+class HttpProxyAPIUrl(TypedDict):
+    option: Literal["url"]
     url: str
 
 
+class HttpProxyAPIGlobal(TypedDict):
+    option: Literal["global"]
+    global_proxy_id: str
+
+
 class HttpProxyAPIValueType(CheckboxStateType, total=False):
-    value: HttpProxyAPIAttrs
+    value: HttpProxyAPINoProxy | HttpProxyAPIEnvironment | HttpProxyAPIUrl | HttpProxyAPIGlobal
 
 
 @dataclass
@@ -1193,18 +1208,24 @@ class CheckboxHttpProxy:
 
     @classmethod
     def from_api_request(cls, data: HttpProxyAPIValueType) -> CheckboxHttpProxy:
-        if data["state"] == "disabled":
-            return cls()
-
-        value = data["value"]
-
-        match value["option"]:
-            case "no_proxy":
+        match data:
+            case {"state": "enabled", "value": {"option": "no_proxy"}}:
                 return cls(value=("no_proxy", None))
-            case "environment":
+
+            case {"state": "enabled", "value": {"option": "url", "url": str() as url}}:
+                return cls(value=("url", url))
+
+            case {
+                "state": "enabled",
+                "value": {"option": "global", "global_proxy_id": str() as global_proxy_id},
+            }:
+                return cls(value=("global", global_proxy_id))
+
+            case {"state": "enabled", "value": {"option": "environment"}}:
                 return cls(value=("environment", "environment"))
-            case "url":
-                return cls(value=("url", value["url"]))
+
+            case _:
+                return cls()
 
     def api_response(self) -> HttpProxyAPIValueType:
         state: CheckboxState = "disabled" if self.value is None else "enabled"
@@ -1220,7 +1241,10 @@ class CheckboxHttpProxy:
             r["value"] = {"option": option}
 
         if option == "url" and value is not None:
-            r["value"] = {"option": option, "url": value}
+            r["value"] = {"option": "url", "url": value}
+
+        if option == "global" and value is not None:
+            r["value"] = {"option": "global", "global_proxy_id": value}
 
         return r
 
@@ -1232,26 +1256,8 @@ class CheckboxHttpProxy:
 
 
 # ----------------------------------------------------------------
-INCIDENT_STATE_TYPE = Literal[
-    "none",
-    "new",
-    "progress",
-    "hold",
-    "resolved",
-    "closed",
-    "canceled",
-]
-CASE_STATE_TYPE = Literal[
-    "none",
-    "new",
-    "closed",
-    "open",
-    "awaiting_info",
-]
-
-
 class AckStateValue(TypedDict, total=False):
-    start_predefined: INCIDENT_STATE_TYPE
+    start_predefined: IncidentStateStr
     start_integer: int
 
 
@@ -1260,7 +1266,7 @@ class AckStateAPI(CheckboxStateType, total=False):
 
 
 class AckStateMk(TypedDict):
-    start: INCIDENT_STATE_TYPE | int
+    start: IncidentState
 
 
 @dataclass
@@ -1301,7 +1307,7 @@ class AckState:
 
 # ----------------------------------------------------------------
 class RecoveryStateValue(TypedDict, total=False):
-    start_predefined: CASE_STATE_TYPE | INCIDENT_STATE_TYPE
+    start_predefined: CaseStateStr | IncidentStateStr
     start_integer: int
 
 
@@ -1310,7 +1316,7 @@ class RecoveryStateAPI(CheckboxStateType, total=False):
 
 
 class RecoveryStateMk(TypedDict):
-    start: CASE_STATE_TYPE | INCIDENT_STATE_TYPE | int
+    start: CaseState | IncidentState
 
 
 @dataclass
@@ -1351,8 +1357,8 @@ class RecoveryState:
 
 # ----------------------------------------------------------------
 class DowntimeStateValue(TypedDict, total=False):
-    start_predefined: INCIDENT_STATE_TYPE
-    end_predefined: INCIDENT_STATE_TYPE
+    start_predefined: IncidentStateStr
+    end_predefined: IncidentStateStr
     start_integer: int
     end_integer: int
 
@@ -1362,8 +1368,8 @@ class DowntimeStateAPI(CheckboxStateType, total=False):
 
 
 class DowntimeStateMk(TypedDict, total=False):
-    start: INCIDENT_STATE_TYPE | int
-    end: INCIDENT_STATE_TYPE | int
+    start: IncidentState
+    end: IncidentState
 
 
 @dataclass
@@ -1811,7 +1817,7 @@ class BulkOutsideTimePeriod:
     time_horizon: int
 
     @classmethod
-    def from_mk_file_format(cls, data: BulkOutsideTimePeriodType | None) -> BulkOutsideTimePeriod:
+    def from_mk_file_format(cls, data: AlwaysBulkParameters | None) -> BulkOutsideTimePeriod:
         if data is None:
             return BulkOutsideTimePeriod.disabled()
 
@@ -1820,10 +1826,10 @@ class BulkOutsideTimePeriod:
             subject_for_bulk_notifications=CheckboxWithStrValue.from_mk_file_format(
                 data.get("bulk_subject")
             ),
-            max_bulk_size=data.get("count", 0),
-            notification_bulks_based_on=data.get("groupby", []),
-            notification_bulks_based_on_custom_macros=data.get("groupby_custom", []),
-            time_horizon=data.get("interval", 0),
+            max_bulk_size=data["count"],
+            notification_bulks_based_on=data["groupby"],
+            notification_bulks_based_on_custom_macros=data["groupby_custom"],
+            time_horizon=data["interval"],
         )
 
     @classmethod
@@ -1858,15 +1864,17 @@ class BulkOutsideTimePeriod:
             }
         return r
 
-    def to_mk_file_format(self) -> BulkOutsideTimePeriodType:
-        r = {
-            "count": self.max_bulk_size,
-            "groupby": self.notification_bulks_based_on,
-            "groupby_custom": self.notification_bulks_based_on_custom_macros,
-            "interval": self.time_horizon,
-            "bulk_subject": self.subject_for_bulk_notifications.to_mk_file_format(),
-        }
-        return cast(BulkOutsideTimePeriodType, {k: v for k, v in r.items() if v is not None})
+    def to_mk_file_format(self) -> AlwaysBulkParameters:
+        r = AlwaysBulkParameters(
+            count=self.max_bulk_size,
+            groupby=self.notification_bulks_based_on,
+            groupby_custom=self.notification_bulks_based_on_custom_macros,
+            interval=self.time_horizon,
+        )
+        if (bulk_subject := self.subject_for_bulk_notifications.to_mk_file_format()) is not None:
+            r["bulk_subject"] = bulk_subject
+
+        return r
 
     @classmethod
     def disabled(cls):
@@ -1928,7 +1936,7 @@ class CheckboxNotificationBulking:
 
         bulk: NotificationBulkingAlwaysParams | NotificationBulkingTimeoutParams
 
-        if when_to_bulk == "always":
+        if is_always_bulk(bulk_params):
             bulk = NotificationBulkingAlwaysParams(
                 subject_for_bulk_notifications=subject_for_bulk_notifications,
                 max_bulk_size=bulk_params["count"],
@@ -1936,7 +1944,7 @@ class CheckboxNotificationBulking:
                 notification_bulks_based_on_custom_macros=bulk_params["groupby_custom"],
                 time_horizon=bulk_params["interval"],
             )
-        elif when_to_bulk == "timeperiod":
+        elif is_timeperiod_bulk(bulk_params):
             bulk = NotificationBulkingTimeoutParams(
                 time_period=bulk_params["timeperiod"],
                 subject_for_bulk_notifications=subject_for_bulk_notifications,
@@ -2004,22 +2012,26 @@ class CheckboxNotificationBulking:
             "count": self.bulk.max_bulk_size,
             "groupby": self.bulk.notification_bulks_based_on,
             "groupby_custom": self.bulk.notification_bulks_based_on_custom_macros,
-            "bulk_subject": self.bulk.subject_for_bulk_notifications.to_mk_file_format(),
         }
+
+        if (
+            bulk_subject := self.bulk.subject_for_bulk_notifications.to_mk_file_format()
+        ) is not None:
+            r["bulk_subject"] = bulk_subject
 
         if isinstance(self.bulk, NotificationBulkingAlwaysParams):
             r["interval"] = self.bulk.time_horizon
+            always_bulk_params = cast(AlwaysBulkParameters, r)
+            return ("always", always_bulk_params)
 
-        elif isinstance(self.bulk, NotificationBulkingTimeoutParams):
-            r.update(
-                {
-                    "timeperiod": self.bulk.time_period,
-                    "bulk_outside": self.bulk.bulk_outside_timeperiod.to_mk_file_format(),
-                }
-            )
-
-        nbt: NotifyBulkType = (self.when_to_bulk, {k: v for k, v in r.items() if v is not None})
-        return nbt
+        r.update(
+            {
+                "timeperiod": self.bulk.time_period,
+                "bulk_outside": self.bulk.bulk_outside_timeperiod.to_mk_file_format(),
+            }
+        )
+        timeperiod_bulk_params = cast(TimeperiodBulkParameters, r)
+        return ("timeperiod", timeperiod_bulk_params)
 
 
 # ----------------------------------------------------------------
@@ -2074,7 +2086,7 @@ class APIPasswordOption:
 
 
 # ----------------------------------------------------------------
-class APISecret(API_ExplicitOrStore, total=False):  # SignL4Plugin
+class APISecret(API_ExplicitOrStore, total=False):
     secret: str
 
 
@@ -2296,11 +2308,8 @@ class WebhookURLOption:
 # ----------------------------------------------------------------
 
 
-class APINotifyPluginParams(TypedDict):
-    plugin_name: BuiltInPluginNames
-
-
-class API_AsciiMailData(APINotifyPluginParams, total=False):
+class API_AsciiMailData(TypedDict, total=False):
+    plugin_name: Required[AsciiMailPluginName]
     from_details: FromAndToEmailFieldsAPIValueType
     reply_to: FromAndToEmailFieldsAPIValueType
     subject_for_host_notifications: CheckboxStrAPIType
@@ -2312,7 +2321,8 @@ class API_AsciiMailData(APINotifyPluginParams, total=False):
     body_tail_for_service_notifications: CheckboxStrAPIType
 
 
-class API_HTMLMailData(APINotifyPluginParams, total=False):
+class API_HTMLMailData(TypedDict, total=False):
+    plugin_name: Required[MailPluginName]
     from_details: FromAndToEmailFieldsAPIValueType
     reply_to: FromAndToEmailFieldsAPIValueType
     subject_for_host_notifications: CheckboxStrAPIType
@@ -2328,19 +2338,22 @@ class API_HTMLMailData(APINotifyPluginParams, total=False):
     bulk_notifications_with_graphs: CheckboxIntAPIType
 
 
-class API_CiscoData(APINotifyPluginParams, total=False):
+class API_CiscoData(TypedDict, total=False):
+    plugin_name: Required[CiscoPluginName]
     webhook_url: API_WebhookURL
     http_proxy: HttpProxyAPIValueType
     url_prefix_for_links_to_checkmk: CheckboxURLPrefixAPIValueType
     disable_ssl_cert_verification: CheckboxStateType
 
 
-class API_MKEventData(APINotifyPluginParams, total=False):
+class API_MKEventData(TypedDict, total=False):
+    plugin_name: Required[MkeventdPluginName]
     syslog_facility_to_use: SysLogFacilityAPIValueType
     ip_address_of_remote_event_console: CheckboxStrAPIType
 
 
-class API_IlertData(APINotifyPluginParams, total=False):
+class API_IlertData(TypedDict, total=False):
+    plugin_name: Required[IlertPluginName]
     api_key: APIKey
     disable_ssl_cert_verification: CheckboxStateType
     notification_priority: Literal["HIGH", "LOW"]
@@ -2350,7 +2363,8 @@ class API_IlertData(APINotifyPluginParams, total=False):
     http_proxy: HttpProxyAPIValueType
 
 
-class API_JiraData(APINotifyPluginParams, total=False):
+class API_JiraData(TypedDict, total=False):
+    plugin_name: Required[JiraPluginName]
     jira_url: str
     disable_ssl_cert_verification: CheckboxStateType
     username: str
@@ -2369,7 +2383,8 @@ class API_JiraData(APINotifyPluginParams, total=False):
     optional_timeout: CheckboxStrAPIType
 
 
-class API_OpsGenieIssueData(APINotifyPluginParams, total=False):
+class API_OpsGenieIssueData(TypedDict, total=False):
+    plugin_name: Required[OpsGeniePluginName]
     api_key: APIKey
     domain: CheckboxStrAPIType
     http_proxy: HttpProxyAPIValueType
@@ -2388,14 +2403,16 @@ class API_OpsGenieIssueData(APINotifyPluginParams, total=False):
     entity: CheckboxStrAPIType
 
 
-class API_PagerDutyData(APINotifyPluginParams, total=False):
+class API_PagerDutyData(TypedDict, total=False):
+    plugin_name: Required[PagerdutyPluginName]
     integration_key: APIKey
     disable_ssl_cert_verification: CheckboxStateType
     http_proxy: HttpProxyAPIValueType
     url_prefix_for_links_to_checkmk: CheckboxURLPrefixAPIValueType
 
 
-class API_PushOverData(APINotifyPluginParams, total=False):
+class API_PushOverData(TypedDict, total=False):
+    plugin_name: Required[PushoverPluginName]
     api_key: str
     user_group_key: str
     url_prefix_for_links_to_checkmk: CheckboxStrAPIType
@@ -2404,7 +2421,8 @@ class API_PushOverData(APINotifyPluginParams, total=False):
     sound: CheckboxPushoverSoundAPIType
 
 
-class API_ServiceNowData(APINotifyPluginParams, total=False):
+class API_ServiceNowData(TypedDict, total=False):
+    plugin_name: Required[ServiceNowPluginName]
     servicenow_url: str
     http_proxy: HttpProxyAPIValueType
     username: str
@@ -2414,21 +2432,24 @@ class API_ServiceNowData(APINotifyPluginParams, total=False):
     management_type: MgmtTypeAPI
 
 
-class API_SignL4Data(APINotifyPluginParams, total=False):
+class API_SignL4Data(TypedDict, total=False):
+    plugin_name: Required[Signl4PluginName]
     team_secret: APISecret
     url_prefix_for_links_to_checkmk: CheckboxURLPrefixAPIValueType
     disable_ssl_cert_verification: CheckboxStateType
     http_proxy: HttpProxyAPIValueType
 
 
-class API_SlackData(APINotifyPluginParams, total=False):
+class API_SlackData(TypedDict, total=False):
+    plugin_name: Required[SlackPluginName]
     webhook_url: API_WebhookURL
     url_prefix_for_links_to_checkmk: CheckboxURLPrefixAPIValueType
     disable_ssl_cert_verification: CheckboxStateType
     http_proxy: HttpProxyAPIValueType
 
 
-class API_SmsAPIData(APINotifyPluginParams, total=False):
+class API_SmsAPIData(TypedDict, total=False):
+    plugin_name: Required[SmsApiPluginName]
     modem_type: Literal["trb140"]
     modem_url: str
     disable_ssl_cert_verification: CheckboxStateType
@@ -2438,24 +2459,28 @@ class API_SmsAPIData(APINotifyPluginParams, total=False):
     timeout: str
 
 
-class API_SmsData(APINotifyPluginParams, total=False):
+class API_SmsData(TypedDict, total=False):
+    plugin_name: Required[SmsPluginName]
     params: list[str]
 
 
-class API_SpectrumData(APINotifyPluginParams, total=False):
+class API_SpectrumData(TypedDict, total=False):
+    plugin_name: Required[SpectrumPluginName]
     base_oid: str
     destination_ip: str
     snmp_community: str
 
 
-class API_VictorOpsData(APINotifyPluginParams, total=False):
+class API_VictorOpsData(TypedDict, total=False):
+    plugin_name: Required[SplunkPluginName]
     splunk_on_call_rest_endpoint: API_WebhookURL
     url_prefix_for_links_to_checkmk: CheckboxURLPrefixAPIValueType
     disable_ssl_cert_verification: CheckboxStateType
     http_proxy: HttpProxyAPIValueType
 
 
-class API_MSTeamsData(APINotifyPluginParams, total=False):
+class API_MSTeamsData(TypedDict, total=False):
+    plugin_name: Required[MSTeamsPluginName]
     webhook_url: API_WebhookURL
     http_proxy: HttpProxyAPIValueType
     host_title: CheckboxStrAPIType

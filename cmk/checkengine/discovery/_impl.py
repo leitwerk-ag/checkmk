@@ -15,6 +15,7 @@ from cmk.utils.auto_queue import AutoQueue
 from cmk.utils.exceptions import OnError
 from cmk.utils.hostaddress import HostName
 from cmk.utils.labels import DiscoveredHostLabelsStore, HostLabel
+from cmk.utils.log import console
 from cmk.utils.sectionname import SectionMap, SectionName
 from cmk.utils.servicename import Item, ServiceName
 
@@ -29,7 +30,7 @@ from cmk.checkengine.sectionparserutils import check_parsing_errors
 from cmk.checkengine.summarize import SummarizerFunction
 
 from ._autochecks import AutocheckServiceWithNodes, DiscoveredService
-from ._autodiscovery import get_host_services, ServicesByTransition
+from ._autodiscovery import get_host_services_by_host_name, ServicesByTransition
 from ._discovery import DiscoveryPlugin
 from ._filters import ServiceFilter as _ServiceFilter
 from ._filters import ServiceFilters as _ServiceFilters
@@ -90,7 +91,7 @@ def execute_check_discovery(
     find_service_description: Callable[[HostName, CheckPluginName, Item], ServiceName],
     section_error_handling: Callable[[SectionName, Sequence[object]], str],
     enforced_services: Container[ServiceID],
-) -> ActiveCheckResult:
+) -> Sequence[ActiveCheckResult]:
     # Note: '--cache' is set in core_cmc, nagios template or even on CL and means:
     # 1. use caches as default:
     #    - Set FileCacheGlobals.maybe = True (set max_cachefile_age, else 0)
@@ -101,7 +102,8 @@ def execute_check_discovery(
 
     host_sections = parser(fetched)
     host_sections_by_host = group_by_host(
-        (HostKey(s.hostname, s.source_type), r.ok) for s, r in host_sections if r.is_ok()
+        ((HostKey(s.hostname, s.source_type), r.ok) for s, r in host_sections if r.is_ok()),
+        console.debug,
     )
     store_piggybacked_sections(host_sections_by_host)
     providers = make_providers(
@@ -140,7 +142,7 @@ def execute_check_discovery(
             ),
         )
 
-    services = get_host_services(
+    services_by_host = get_host_services_by_host_name(
         host_name,
         is_cluster=is_cluster,
         cluster_nodes=cluster_nodes,
@@ -156,7 +158,7 @@ def execute_check_discovery(
 
     services_result, services_need_rediscovery = _check_service_lists(
         host_name=host_name,
-        services_by_transition=services,
+        services_by_transition=services_by_host[host_name],
         params=params,
         service_filters=_ServiceFilters.from_settings(params.rediscovery),
         discovery_mode=discovery_mode,
@@ -174,7 +176,7 @@ def execute_check_discovery(
     )
     failed_sources = [r for r in summarizer(host_sections) if r.state != 0]
 
-    return ActiveCheckResult.from_subresults(
+    return [
         *itertools.chain(
             services_result,
             host_labels_result,
@@ -191,7 +193,7 @@ def execute_check_discovery(
                 )
             ],
         )
-    )
+    ]
 
 
 def _check_service_lists(
@@ -269,9 +271,11 @@ def _check_service_lists(
     if change_affected_check_plugins:
         severity = max(
             params.severity_changed_service_labels if modified_labels else 0,
-            params.severity_changed_service_params
-            if _CHANGED_PARAMS_FEATURE_FLAG and modified_params
-            else 0,
+            (
+                params.severity_changed_service_params
+                if _CHANGED_PARAMS_FEATURE_FLAG and modified_params
+                else 0
+            ),
         )
         subresults.append(
             _transition_result(_Transition.CHANGED, change_affected_check_plugins, severity)
@@ -321,7 +325,14 @@ def _iter_output_services(
     services_by_transition: ServicesByTransition,
     params: DiscoveryCheckParameters,
     service_filters: _ServiceFilters,
-) -> Iterable[tuple[_Transition, Sequence[AutocheckServiceWithNodes], int, _ServiceFilter,]]:
+) -> Iterable[
+    tuple[
+        _Transition,
+        Sequence[AutocheckServiceWithNodes],
+        int,
+        _ServiceFilter,
+    ]
+]:
     yield (
         _Transition.NEW,
         services_by_transition.get("new", []),

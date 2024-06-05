@@ -22,9 +22,9 @@ def REPO_PATCH_RULES = [\
         "saas", \
         "cse", \
         "cse.py", \
-        "web/htdocs/themes/{facelift,modern-dark}/scss/{cme,cee,cce}"],\
+        "packages/cmk-frontend/src/themes/{facelift,modern-dark}/scss/{cme,cee,cce}"],\
     "folders_to_be_created": [\
-        "web/htdocs/themes/{facelift,modern-dark}/scss/{cme,cee,cce}"]], \
+        "packages/cmk-frontend/src/themes/{facelift,modern-dark}/scss/{cme,cee,cce}"]], \
 "enterprise": [\
     "paths_to_be_removed": [\
         "managed", \
@@ -36,9 +36,9 @@ def REPO_PATCH_RULES = [\
         "saas", \
         "cse", \
         "cse.py", \
-        "web/htdocs/themes/{facelift,modern-dark}/scss/{cme,cce}"], \
+        "packages/cmk-frontend/src/themes/{facelift,modern-dark}/scss/{cme,cce}"], \
     "folders_to_be_created": [\
-        "web/htdocs/themes/{facelift,modern-dark}/scss/{cme,cce}"]], \
+        "packages/cmk-frontend/src/themes/{facelift,modern-dark}/scss/{cme,cce}"]], \
 "managed": [\
     "paths_to_be_removed": [\
         "saas", \
@@ -53,17 +53,17 @@ def REPO_PATCH_RULES = [\
         "saas", \
         "cse", \
         "cse.py", \
-        "web/htdocs/themes/{facelift,modern-dark}/scss/cme"], \
+        "packages/cmk-frontend/src/themes/{facelift,modern-dark}/scss/cme"], \
     "folders_to_be_created": [\
-        "web/htdocs/themes/{facelift,modern-dark}/scss/cme"]], \
+        "packages/cmk-frontend/src/themes/{facelift,modern-dark}/scss/cme"]], \
 "saas": [\
     "paths_to_be_removed": [\
         "managed", \
         "cme", \
         "cme.py", \
-        "web/htdocs/themes/{facelift,modern-dark}/scss/cme"], \
+        "packages/cmk-frontend/src/themes/{facelift,modern-dark}/scss/cme"], \
     "folders_to_be_created": [\
-        "web/htdocs/themes/{facelift,modern-dark}/scss/cme"]], \
+        "packages/cmk-frontend/src/themes/{facelift,modern-dark}/scss/cme"]], \
 ];
 /* groovylint-enable DuplicateListLiteral */
 
@@ -87,36 +87,52 @@ def get_cmk_version(branch_name, branch_version, version) {
 }
 /* groovylint-enable DuplicateListLiteral */
 
-def configured_or_overridden_distros(edition, distro_list, use_case="daily") {
-    if(distro_list) {
-        return distro_list.trim().replaceAll(',', ' ').split(' ');
+def get_distros(Map args) {
+    def override_distros = args.override.trim() ?: "";
+
+    /// retrieve all available distros if provided distro-list is 'all',
+    /// respect provided arguments otherwise
+    def edition = override_distros == "all" ? "all" : args.edition.trim() ?: "all";
+    def use_case = override_distros == "all" ? "all" : args.use_case.trim() ?: "daily";
+
+    /// return requested list if provided
+    if(override_distros && override_distros != "all") {
+        return override_distros.replaceAll(',', ' ').split(' ').grep();
     }
-    docker_image_from_alias("IMAGE_TESTING").inside() {
-        dir("${checkout_dir}") {
-            return sh(script: """scripts/run-pipenv run \
-                  buildscripts/scripts/get_distros.py \
-                  --editions_file "${checkout_dir}/editions.yml" \
-                  use_cases \
-                  --edition "${edition}" \
-                  --use_case "${use_case}"
-            """, returnStdout: true).trim().split();
-        }
+
+    /// read distros from edition.yml otherwise.
+    dir("${checkout_dir}") {
+        return cmd_output("""python3 \
+              buildscripts/scripts/get_distros.py \
+              --editions_file "${checkout_dir}/editions.yml" \
+              use_cases \
+              --edition "${edition}" \
+              --use_case "${use_case}"
+        """).split().grep();
     }
 }
 
-def get_internal_distros_pattern() {
-    docker_image_from_alias("IMAGE_TESTING").inside() {
-        dir("${checkout_dir}") {
-            return sh(script: """scripts/run-pipenv run \
-                  buildscripts/scripts/get_distros.py \
-                  --editions_file "editions.yml" \
-                  internal_distros \
-                  --as-codename \
-                  --as-rsync-exclude-pattern;
-            """, returnStdout: true).trim();
-        }
+def get_editions() {
+    /// read editions from edition.yml
+    dir("${checkout_dir}") {
+        return cmd_output("""python3 \
+              buildscripts/scripts/get_distros.py \
+              --editions_file "${checkout_dir}/editions.yml" \
+              editions
+        """).split().grep();
     }
+}
 
+def get_internal_artifacts_pattern() {
+    dir("${checkout_dir}") {
+        return sh(script: """python3 \
+              buildscripts/scripts/get_distros.py \
+              --editions_file "editions.yml" \
+              internal_build_artifacts \
+              --as-codename \
+              --as-rsync-exclude-pattern;
+        """, returnStdout: true).trim();
+    }
 }
 
 def get_branch_version(String git_dir=".") {
@@ -174,24 +190,12 @@ def patch_themes(EDITION) {
             // Workaround since scss does not support conditional includes
             THEME_LIST.each { THEME ->
                 sh """
-                    echo '@mixin graphs_cee {}' > web/htdocs/themes/${THEME}/scss/cee/_graphs_cee.scss
-                    echo '@mixin reporting {}' > web/htdocs/themes/${THEME}/scss/cee/_reporting.scss
-                    echo '@mixin ntop {}' > web/htdocs/themes/${THEME}/scss/cee/_ntop.scss
-                    echo '@mixin license_usage {}' > web/htdocs/themes/${THEME}/scss/cee/_license_usage.scss
-                    echo '@mixin robotmk {}' > web/htdocs/themes/${THEME}/scss/cee/_robotmk.scss
-                    echo '@mixin managed {}' > web/htdocs/themes/${THEME}/scss/cme/_managed.scss
+                    echo '@mixin graphs_cee {\n}' > packages/cmk-frontend/src/themes/${THEME}/scss/cee/_graphs_cee.scss
+                    echo '@mixin reporting {\n}' > packages/cmk-frontend/src/themes/${THEME}/scss/cee/_reporting.scss
+                    echo '@mixin ntop {\n}' > packages/cmk-frontend/src/themes/${THEME}/scss/cee/_ntop.scss
+                    echo '@mixin license_usage {\n}' > packages/cmk-frontend/src/themes/${THEME}/scss/cee/_license_usage.scss
+                    echo '@mixin robotmk {\n}' > packages/cmk-frontend/src/themes/${THEME}/scss/cee/_robotmk.scss
                 """
-            }
-            break
-        case 'cloud':
-        case 'saas':
-        case 'enterprise':
-        case 'free':
-            // Workaround since scss does not support conditional includes
-            THEME_LIST.each { THEME ->
-                sh("""
-                    echo '@mixin managed {}' > web/htdocs/themes/${THEME}/scss/cme/_managed.scss
-                """);
             }
             break
     }

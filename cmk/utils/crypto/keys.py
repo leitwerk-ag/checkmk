@@ -9,8 +9,8 @@ from typing import get_args, overload, TypeAlias, TypeGuard
 
 import cryptography.exceptions
 import cryptography.hazmat.primitives.asymmetric as asym
-import cryptography.hazmat.primitives.asymmetric.padding as padding
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 from cmk.utils.crypto.password import Password
 from cmk.utils.crypto.types import (
@@ -90,13 +90,11 @@ class PrivateKey:
 
     @overload
     @classmethod
-    def load_pem(cls, pem_data: PlaintextPrivateKeyPEM, password: None = None) -> PrivateKey:
-        ...
+    def load_pem(cls, pem_data: PlaintextPrivateKeyPEM, password: None = None) -> PrivateKey: ...
 
     @overload
     @classmethod
-    def load_pem(cls, pem_data: EncryptedPrivateKeyPEM, password: Password) -> PrivateKey:
-        ...
+    def load_pem(cls, pem_data: EncryptedPrivateKeyPEM, password: Password) -> PrivateKey: ...
 
     @classmethod
     def load_pem(
@@ -170,12 +168,10 @@ class PrivateKey:
         return cls(key)
 
     @overload
-    def dump_pem(self, password: None) -> PlaintextPrivateKeyPEM:
-        ...
+    def dump_pem(self, password: None) -> PlaintextPrivateKeyPEM: ...
 
     @overload
-    def dump_pem(self, password: Password) -> EncryptedPrivateKeyPEM:
-        ...
+    def dump_pem(self, password: Password) -> EncryptedPrivateKeyPEM: ...
 
     def dump_pem(
         self, password: Password | None
@@ -190,21 +186,25 @@ class PrivateKey:
         bytes_ = self._key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.BestAvailableEncryption(password.raw_bytes)
-            if password is not None
-            else serialization.NoEncryption(),
+            encryption_algorithm=(
+                serialization.BestAvailableEncryption(password.raw_bytes)
+                if password is not None
+                else serialization.NoEncryption()
+            ),
         )
         if password is None:
             return PlaintextPrivateKeyPEM(bytes_)
         return EncryptedPrivateKeyPEM(bytes_)
 
-    def dump_legacy_pkcs1(self) -> PlaintextPrivateKeyPEM:
+    def rsa_dump_legacy_pkcs1(self) -> PlaintextPrivateKeyPEM:
         """Deprecated. Use dump_pem() instead.
+
+        This method only works on RSA keys!
 
         Encode the private key without encryption in PKCS#1 / OpenSSL format
         (i.e. '-----BEGIN RSA PRIVATE KEY-----...').
         """
-        bytes_ = self._key.private_bytes(
+        bytes_ = self.get_raw_rsa_key().private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption(),
@@ -273,12 +273,10 @@ class PublicKey:
         return self._key == other._key
 
     def dump_pem(self) -> PublicKeyPEM:
-        # TODO: Use SubjectPublicKeyInfo format rather than PKCS1. PKCS1 doesn't include an
-        # algorithm identifier.
         return PublicKeyPEM(
             self._key.public_bytes(
                 serialization.Encoding.PEM,
-                serialization.PublicFormat.PKCS1,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
             )
         )
 

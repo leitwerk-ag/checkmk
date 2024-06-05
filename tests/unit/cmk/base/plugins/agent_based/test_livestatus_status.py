@@ -3,13 +3,17 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-import pytest
+# pylint: disable=protected-access
 
-from tests.testlib import set_timezone
+import datetime
+from zoneinfo import ZoneInfo
+
+import pytest
+import time_machine
 
 from cmk.checkengine.parameters import Parameters
 
-import cmk.base.plugins.agent_based.livestatus_status as livestatus_status
+from cmk.base.plugins.agent_based import livestatus_status
 from cmk.base.plugins.agent_based.agent_based_api.v1 import Metric, Result, Service, State
 from cmk.base.plugins.agent_based.agent_based_api.v1.type_defs import CheckResult
 
@@ -508,8 +512,8 @@ PARSED_STATUS = {
         "forks_rate": "0",
         "has_event_handlers": "0",
         # Simulate the host without those counters:
-        #'helper_usage_fetcher': '0',
-        #'helper_usage_checker': '0',
+        # "helper_usage_fetcher": "0",
+        # "helper_usage_checker": "0",
         "helper_usage_generic": "0",
         "helper_usage_real_time": "0",
         "host_checks": "0",
@@ -763,7 +767,9 @@ _RESULTS = [
 
 
 def test_check() -> None:
-    with set_timezone("UTC"):  # needed for certificate validity string
+    with time_machine.travel(
+        datetime.datetime(2024, 1, 1, tzinfo=ZoneInfo("UTC"))
+    ):  # needed for certificate validity string
         yielded_results = list(
             livestatus_status._generate_livestatus_results(
                 "heute",

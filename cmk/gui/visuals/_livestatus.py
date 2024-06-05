@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from livestatus import SiteId
 
-import cmk.gui.sites as sites
+from cmk.gui import sites
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.type_defs import FilterHeader, VisualContext
 from cmk.gui.utils.user_errors import user_errors
@@ -44,11 +44,8 @@ def get_only_sites_from_context(context: VisualContext) -> list[SiteId] | None:
     "sites" for many sites filter is only used if the view is configured
     to only this filter.
     """
-
-    if "sites" in context and "site" not in context:
-        only_sites = context["sites"]["sites"]
-        only_sites_list = [SiteId(site) for site in only_sites.strip().split("|") if site]
-        return only_sites_list if only_sites_list else None
+    if "sites" in context and (only_sites := context["sites"]["sites"]):
+        return [SiteId(site) for site in only_sites.strip().split("|") if site]
 
     for var in ["site", "siteopt"]:
         if site_name := context.get(var, {}).get("site"):

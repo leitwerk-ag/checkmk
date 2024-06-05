@@ -18,7 +18,6 @@ from cmk.utils.store import ObjectStore
 
 from cmk.checkengine.checking import CheckPluginName, ConfiguredService, ServiceID
 from cmk.checkengine.discovery._utils import DiscoveredItem
-from cmk.checkengine.legacy import LegacyCheckParameters
 from cmk.checkengine.parameters import TimespecificParameters
 
 __all__ = [
@@ -34,7 +33,7 @@ __all__ = [
 
 
 ComputeCheckParameters = Callable[
-    [HostName, CheckPluginName, Item, LegacyCheckParameters],
+    [HostName, CheckPluginName, Item, Mapping[str, object]],
     TimespecificParameters,
 ]
 GetServiceDescription = Callable[[HostName, CheckPluginName, Item], ServiceName]
@@ -273,7 +272,7 @@ def _consolidate_autochecks_of_real_hosts(
 def set_autochecks_of_cluster(
     nodes: Iterable[HostName],
     hostname: HostName,
-    new_services_with_nodes: Sequence[AutocheckServiceWithNodes],
+    new_services_with_nodes_by_host: Mapping[HostName, Sequence[AutocheckServiceWithNodes]],
     get_effective_host: GetEffectviveHost,
     get_service_description: GetServiceDescription,
 ) -> None:
@@ -287,7 +286,7 @@ def set_autochecks_of_cluster(
             if hostname != get_effective_host(node, get_service_description(node, *existing.id()))
         ] + [
             DiscoveredService.newer(discovered)
-            for discovered, found_on_nodes in new_services_with_nodes
+            for discovered, found_on_nodes in new_services_with_nodes_by_host[node]
             if node in found_on_nodes
         ]
 

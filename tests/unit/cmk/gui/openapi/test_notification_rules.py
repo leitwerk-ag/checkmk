@@ -4,15 +4,15 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 
-from collections.abc import Iterator
-from typing import Any, Generator, get_args, Literal
+from collections.abc import Generator, Iterator
+from typing import Any, get_args, Literal
 
 import pytest
 
 from tests.testlib.rest_api_client import ClientRegistry
 
 from cmk.utils import version
-from cmk.utils.notify_types import CustomPluginName, PluginOptions
+from cmk.utils.notify_types import CaseStateStr, CustomPluginName, IncidentStateStr, PluginOptions
 
 from cmk.gui.openapi.endpoints.notification_rules.request_example import (
     notification_rule_request_example,
@@ -29,8 +29,6 @@ from cmk.gui.rest_api_types.notifications_rule_types import (
     APIPluginDict,
     APIPluginList,
     APIRuleProperties,
-    CASE_STATE_TYPE,
-    INCIDENT_STATE_TYPE,
     MatchHostEventsAPIType,
     MatchServiceEventsAPIType,
     MgmtTypeAPI,
@@ -92,7 +90,7 @@ def test_update_rule_with_full_contact_selection_data(clients: ClientRegistry) -
         "members_of_contact_groups": {"state": "enabled", "value": ["cg1", "cg2"]},
         "explicit_email_addresses": {
             "state": "enabled",
-            "value": ["monkey@tribe29.com", "thelionsleepstonight@thetokens.com"],
+            "value": ["monkey@example.com", "thelionsleepstonight@example.com"],
         },
         "restrict_by_custom_macros": {"state": "enabled", "value": []},
         "restrict_by_contact_groups": {"state": "enabled", "value": []},
@@ -371,6 +369,7 @@ def conditions_set_3() -> APIConditions:
 
 @managedtest
 @pytest.mark.usefixtures("with_host")
+@pytest.mark.usefixtures("mock_password_file_regeneration")
 @pytest.mark.parametrize("testdata", [conditions_set_1(), conditions_set_2(), conditions_set_3()])
 def test_create_and_update_rule_with_conditions_data_200(
     clients: ClientRegistry,
@@ -398,6 +397,7 @@ def invalid_conditions() -> Iterator:
 
 @managedtest
 @pytest.mark.parametrize("testdata", invalid_conditions())
+@pytest.mark.usefixtures("mock_password_file_regeneration")
 def test_create_and_update_rule_with_conditions_data_400(
     clients: ClientRegistry,
     testdata: APIConditions,
@@ -569,6 +569,24 @@ plugin_test_data: list[PluginType] = [
         "http_proxy": {
             "state": "enabled",
             "value": {"option": "environment"},
+        },
+    },
+    {
+        "plugin_name": "cisco_webex_teams",
+        "webhook_url": {
+            "option": "explicit",
+            "url": "http://abc.com",
+        },
+        "url_prefix_for_links_to_checkmk": {
+            "state": "enabled",
+            "value": {"option": "automatic", "schema": "http"},
+        },
+        "disable_ssl_cert_verification": {
+            "state": "enabled",
+        },
+        "http_proxy": {
+            "state": "enabled",
+            "value": {"option": "global", "global_proxy_id": "some_proxy_id"},
         },
     },
     {
@@ -1297,11 +1315,18 @@ def test_update_notification_method_cancel_previous(
 
 @managedtest
 @pytest.mark.parametrize("plugin_data", plugin_test_data)
+@pytest.mark.usefixtures("mock_password_file_regeneration")
 def test_update_notification_method(
     clients: ClientRegistry,
     plugin_data: PluginType,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     setup_site_data(clients)
+
+    monkeypatch.setattr(
+        "cmk.gui.fields.custom_fields._global_proxy_choices",
+        lambda: [("some_proxy_id")],
+    )
 
     config = notification_rule_request_example()
     r1 = clients.RuleNotification.create(rule_config=config)
@@ -1421,7 +1446,7 @@ service_now_incident: MgmtTypeAPI = {
 
 def incident_states() -> list[MgmtTypeParamsAPI]:
     d: list[MgmtTypeParamsAPI] = []
-    for n, predefined_state in enumerate(list(get_args(INCIDENT_STATE_TYPE))):
+    for n, predefined_state in enumerate(list(get_args(IncidentStateStr))):
         d.append(
             {
                 "state_acknowledgement": {
@@ -1517,7 +1542,7 @@ service_now_case: MgmtTypeAPI = {
 
 def case_states() -> list[MgmtTypeParamsAPI]:
     d: list[MgmtTypeParamsAPI] = []
-    for n, predefined_state in enumerate(list(get_args(CASE_STATE_TYPE))):
+    for n, predefined_state in enumerate(list(get_args(CaseStateStr))):
         d.append(
             {
                 "state_recovery": {
@@ -1588,6 +1613,7 @@ def plugin_with_bulking(
 
 @managedtest
 @pytest.mark.parametrize("config", plugin_with_bulking(bulking="allowed"))
+@pytest.mark.usefixtures("mock_password_file_regeneration")
 def test_bulking_200(
     clients: ClientRegistry,
     config: APINotificationRule,
@@ -1599,6 +1625,7 @@ def test_bulking_200(
 
 @managedtest
 @pytest.mark.parametrize("config", plugin_with_bulking(bulking="not_allowed"))
+@pytest.mark.usefixtures("mock_password_file_regeneration")
 def test_bulking_400(
     clients: ClientRegistry,
     config: APINotificationRule,

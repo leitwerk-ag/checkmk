@@ -3,7 +3,11 @@
 // conditions defined in the file COPYING, which is part of this source code package.
 
 mod common;
+use mk_sql::platform;
+#[cfg(windows)]
+use mk_sql::platform::odbc;
 use mk_sql::types::InstanceName;
+
 use std::path::PathBuf;
 use std::{collections::HashSet, fs::create_dir_all};
 
@@ -52,7 +56,7 @@ fn test_section_select_query() {
     ] {
         tools::create_file_with_content(&custom_sql_path, &(name.to_owned() + ".sql"), "Bu!");
     }
-    let make_section = |name: &str| Section::new(&SectionBuilder::new(name).build(), 100);
+    let make_section = |name: &str| Section::new(&SectionBuilder::new(name).build(), Some(100));
     for name in [
         names::JOBS,
         names::AVAILABILITY_GROUPS,
@@ -71,7 +75,12 @@ fn test_section_select_query() {
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_local_connection() {
-    let mut client = client::create_local(None, mk_sql::ms_sql::defaults::STANDARD_PORT)
+    use mk_sql::ms_sql::defaults;
+
+    let mut client = client::ClientBuilder::new()
+        .local_by_port(Some(defaults::STANDARD_PORT.into()), None)
+        .certificate(std::env::var(tools::MS_SQL_DB_CERT).ok())
+        .build()
         .await
         .unwrap();
     let properties = instance::SqlInstanceProperties::obtain_by_query(&mut client)
@@ -92,35 +101,57 @@ fn is_instance_good(i: &SqlInstance) -> bool {
 }
 
 #[cfg(windows)]
+fn make_default_endpoint() -> Endpoint {
+    let ms_sql = Config::from_string(&format!(
+        r#"---
+mssql:
+  main:
+    authentication:
+      username: u
+      type: integrated
+    connection:
+      hostname: ''
+      {}
+"#,
+        tools::make_tls_block()
+    ))
+    .unwrap()
+    .unwrap();
+    Endpoint::new(ms_sql.auth(), ms_sql.conn())
+}
+
+#[cfg(windows)]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_obtain_all_instances_from_registry_local() {
-    let builders = instance::obtain_instance_builders_from_registry(&Endpoint::default())
+    let endpoint = make_default_endpoint();
+    let builders = instance::obtain_instance_builders(&endpoint, &[])
         .await
         .unwrap();
-    let all: Vec<SqlInstance> = to_instances([&builders.0[..], &builders.1[..]].concat());
+    let all: Vec<SqlInstance> = to_instances(builders);
     assert!(all.iter().all(is_instance_good), "{:?}", all);
     assert_eq!(all.len(), expected_instances().len());
     let names: HashSet<InstanceName> = all.into_iter().map(|i| i.name).collect();
-
     assert_eq!(names, expected_instances(), "During connecting to `local`");
 }
 
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_validate_all_instances_local() {
+    use mk_sql::constants;
+
     let l = tools::LogMe::new("test_validate_all_instances_local").start(log::Level::Debug);
     log::info!("{:#?}", l.dir());
-    let builders = instance::obtain_instance_builders_from_registry(&Endpoint::default())
+    let endpoint = make_default_endpoint();
+    let builders = instance::obtain_instance_builders(&endpoint, &[])
         .await
         .unwrap();
-    let names: Vec<InstanceName> = [&builders.0[..], &builders.1[..]]
-        .concat()
-        .into_iter()
-        .map(|i| i.get_name())
-        .collect();
+    let names: Vec<InstanceName> = builders.into_iter().map(|i| i.get_name()).collect();
 
     for name in names {
-        let c = client::create_instance_local(&name, None, None).await;
+        let c = client::ClientBuilder::new()
+            .browse(&constants::LOCAL_HOST, &name, None::<u16>)
+            .build()
+            .await;
         match c {
             Ok(mut c) => {
                 assert!(tools::run_get_version(&mut c).await.is_some());
@@ -149,7 +180,7 @@ async fn test_validate_all_instances_local() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_remote_connection() {
     if let Some(endpoint) = tools::get_remote_sql_from_env_var() {
-        let mut client = client::create_on_endpoint(&endpoint.make_ep())
+        let mut client = client::connect_main_endpoint(&endpoint.make_ep())
             .await
             .unwrap();
         let properties = instance::SqlInstanceProperties::obtain_by_query(&mut client)
@@ -174,10 +205,10 @@ fn to_instances(builders: Vec<SqlInstanceBuilder>) -> Vec<SqlInstance> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_find_all_instances_remote() {
     if let Some(endpoint) = tools::get_remote_sql_from_env_var() {
-        let builders = instance::obtain_instance_builders_from_registry(&endpoint.make_ep())
+        let builders = instance::obtain_instance_builders(&endpoint.make_ep(), &[])
             .await
             .unwrap();
-        let all = to_instances([&builders.0[..], &builders.1[..]].concat());
+        let all = to_instances(builders);
         assert!(all.iter().all(is_instance_good));
         assert_eq!(all.len(), expected_instances().len());
 
@@ -200,10 +231,10 @@ async fn test_find_all_instances_remote() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_validate_all_instances_remote() {
     if let Some(endpoint) = tools::get_remote_sql_from_env_var() {
-        let instances = instance::obtain_instance_builders_from_registry(&endpoint.make_ep())
+        let builders = instance::obtain_instance_builders(&endpoint.make_ep(), &[])
             .await
             .unwrap();
-        let is = to_instances([&instances.0[..], &instances.1[..]].concat());
+        let is = to_instances(builders);
 
         let cfg = Config::from_string(&create_remote_config(endpoint))
             .unwrap()
@@ -226,7 +257,7 @@ async fn test_validate_all_instances_remote() {
 
 fn make_section<S: Into<String>>(name: S) -> Section {
     let config_section = SectionBuilder::new(name).build();
-    Section::new(&config_section, 100)
+    Section::new(&config_section, Some(100))
 }
 
 async fn validate_all(i: &SqlInstance, c: &mut Client, e: &Endpoint) {
@@ -637,10 +668,10 @@ async fn validate_availability_groups_section(instance: &SqlInstance, endpoint: 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_validate_all_instances_remote_extra() {
     if let Some(endpoint) = tools::get_remote_sql_from_env_var() {
-        let instances = instance::obtain_instance_builders_from_registry(&endpoint.make_ep())
+        let builders = instance::obtain_instance_builders(&endpoint.make_ep(), &[])
             .await
             .unwrap();
-        let is = to_instances([&instances.0[..], &instances.1[..]].clone().concat());
+        let is = to_instances(builders);
         let ms_sql = Config::from_string(
             r"---
 mssql:
@@ -682,7 +713,7 @@ mssql:
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_computer_name() {
     if let Some(endpoint) = tools::get_remote_sql_from_env_var() {
-        let mut client = client::create_on_endpoint(&endpoint.make_ep())
+        let mut client = client::connect_main_endpoint(&endpoint.make_ep())
             .await
             .unwrap();
         let name = query::obtain_computer_name(&mut client).await.unwrap();
@@ -691,6 +722,19 @@ async fn test_get_computer_name() {
             .to_string()
             .to_lowercase()
             .starts_with("agentbuild"),);
+    } else {
+        tools::skip_on_lack_of_ms_sql_endpoint();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_get_user_name() {
+    if let Some(endpoint) = tools::get_remote_sql_from_env_var() {
+        let mut client = client::connect_main_endpoint(&endpoint.make_ep())
+            .await
+            .unwrap();
+        let name = query::obtain_system_user(&mut client).await.unwrap();
+        assert_eq!(name.unwrap().to_lowercase(), endpoint.user.to_lowercase());
     } else {
         tools::skip_on_lack_of_ms_sql_endpoint();
     }
@@ -737,10 +781,12 @@ mssql:
       type: integrated
     connection:
       hostname: localhost
+      {}
     discovery:
       detect: {}
 {instances}
 "#,
+        tools::make_tls_block(),
         if detect { "yes" } else { "no" }
     )
 }
@@ -770,8 +816,24 @@ fn make_remote_instances_config_sub_string(user: &str, pwd: &str, host: &str) ->
 }
 
 #[cfg(windows)]
+fn make_tls_block_instance() -> String {
+    if let Ok(certificate_path) = std::env::var(tools::MS_SQL_DB_CERT) {
+        format!(
+            r#"tls:
+            ca: {}
+            client_certificate: {}
+"#,
+            certificate_path, certificate_path
+        )
+    } else {
+        String::new()
+    }
+}
+
+#[cfg(windows)]
 fn make_local_custom_instances_config_sub_string() -> String {
-    r#"
+    format!(
+        r#"
     instances:
       - sid: MSSQLSERVER
         authentication:
@@ -780,6 +842,7 @@ fn make_local_custom_instances_config_sub_string() -> String {
         connection:
           hostname: localhost
           port: 1433
+          {}
       - sid: WEIRD
         authentication:
           username: user
@@ -787,7 +850,9 @@ fn make_local_custom_instances_config_sub_string() -> String {
         connection:
           hostname: localhost
         port: 1433
-"#
+"#,
+        make_tls_block_instance()
+    )
     .to_string()
 }
 
@@ -1004,10 +1069,6 @@ fn test_run_as_plugin_with_config() {
         update_config_in_dir(&dir, &content);
         let exec = tools::run_bin()
             .env("MK_CONFDIR", dir.path())
-            .arg("--log-dir")
-            .arg("c:\\temp\\xxx")
-            .arg("--temp-dir")
-            .arg("c:\\temp\\xxx")
             .timeout(std::time::Duration::from_secs(20))
             .unwrap();
         let (stdout, code) = tools::get_good_results(&exec).unwrap();
@@ -1030,7 +1091,11 @@ fn test_run_as_plugin_with_config() {
         .unwrap_err();
     let (stderr, code) = tools::get_bad_results(&exec_err).unwrap();
     assert_eq!(code, 1);
-    assert!(stderr.starts_with("Error: No Config\n"), "{}", stderr);
+    assert!(
+        stderr.starts_with("Stop on error: `No Config`\n"),
+        "`{}`",
+        stderr
+    );
 }
 
 /// Minimally validates stdout for a given key words.
@@ -1046,20 +1111,15 @@ fn validate_stdout(stdout: &str, label: &str) {
     assert_eq!(contains(&lines, "|state|1"), 3, "{}\n{}", &label, stdout);
     // - details entries: one per engine
     assert_eq!(contains(&lines, "|details|"), 3, "{}\n{}", &label, stdout);
-    assert_eq!(
-        contains(&lines, "|RTM|Express Edition"),
-        2,
-        "{}\n{}",
-        &label,
-        stdout
-    );
-    assert_eq!(
-        contains(&lines, "|RTM|Express Edition (64-bit)"),
-        1,
-        "{}\n{}",
-        &label,
-        stdout
-    );
+
+    let rtm_count = contains(&lines, "|RTM|Express Edition");
+    let sp3_count = contains(&lines, "|SP3|Express Edition");
+    assert_eq!(rtm_count + sp3_count, 2, "{}\n{}", &label, stdout);
+
+    let rtm_count = contains(&lines, "|RTM|Express Edition (64-bit)");
+    let sp3_count = contains(&lines, "|SP3|Express Edition (64-bit)");
+    assert_eq!(rtm_count + sp3_count, 1, "{}\n{}", &label, stdout);
+
     assert_eq!(
         contains(&lines, "|RTM|Standard Edition"),
         1,
@@ -1075,7 +1135,8 @@ fn create_config_contents() -> Vec<(String, String)> {
     let mut result: Vec<(String, String)> = Vec::new();
     #[cfg(windows)]
     {
-        let content_local = r#"
+        let content_local = format!(
+            r#"
 ---
 mssql:
   main:
@@ -1084,7 +1145,10 @@ mssql:
        type: "integrated"
     connection:
        hostname: "localhost"
-"#;
+       {}
+"#,
+            tools::make_tls_block()
+        );
         result.push(("local".to_owned(), content_local.to_string()));
     }
 
@@ -1123,6 +1187,70 @@ async fn test_check_config_exec_piggyback_remote() {
     let check_config = CheckConfig::load_file(&dir.path().join("mk-sql.yml")).unwrap();
     let output = check_config.exec(&Env::default()).await.unwrap();
     assert!(!output.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_lack_of_sql_db() {
+    let dir = tools::create_temp_process_dir();
+    let content = std::fs::read_to_string(
+        PathBuf::new()
+            .join("tests")
+            .join("files")
+            .join("test-no-ms-sql.yml"),
+    )
+    .unwrap();
+    tools::create_file_with_content(dir.path(), "mk-sql.yml", &content);
+    let check_config = CheckConfig::load_file(&dir.path().join("mk-sql.yml")).unwrap();
+    let output = check_config.exec(&Env::default()).await.unwrap();
+    let awaited = "<<<mssql_instance:sep(124)>>>
+<<<mssql_databases:sep(124)>>>
+<<<mssql_counters:sep(124)>>>
+<<<mssql_blocked_sessions:sep(124)>>>
+<<<mssql_transactionlogs:sep(124)>>>
+<<<mssql_clusters:sep(124)>>>
+<<<mssql_mirroring:sep(09)>>>
+<<<mssql_availability_groups:sep(09)>>>
+<<<mssql_connections>>>
+<<<mssql_tablespaces>>>
+<<<mssql_datafiles:sep(124)>>>
+<<<mssql_backup:sep(124)>>>
+<<<mssql_jobs:sep(09)>>>
+<<<mssql_instance:sep(124)>>>
+ERROR: Failed to gather SQL server instances\n"
+        .to_owned();
+    assert_eq!(output.to_owned(), awaited);
+}
+
+#[cfg(windows)]
+fn create_localhost_remote_config(endpoint: SqlDbEndpoint) -> String {
+    format!(
+        r#"
+---
+mssql:
+  main:
+    authentication:
+      username: {}
+      password: {}
+      type: sql_server
+    #connection:
+    #  hostname: localhost
+    #  trust_server_certificate: true
+ "#,
+        endpoint.user, endpoint.pwd
+    )
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_check_special() {
+    let dir = tools::create_temp_process_dir();
+    let content = create_localhost_remote_config(tools::get_remote_sql_from_env_var().unwrap());
+    tools::create_file_with_content(dir.path(), "mk-sql.yml", &content);
+    let check_config = CheckConfig::load_file(&dir.path().join("mk-sql.yml")).unwrap();
+    let output = check_config.exec(&Env::default()).await.unwrap();
+    assert!(!output.is_empty());
+    assert!(output.contains("MSSQL_MSSQLSERVER|state|1"));
+    assert!(output.contains("MSSQL_MSSQLSERVER|config|16"));
 }
 
 fn create_remote_config_with_piggyback(endpoint: SqlDbEndpoint) -> String {
@@ -1237,7 +1365,7 @@ mssql:
 }
 
 #[test]
-fn test_din_provided_query() {
+fn test_find_provided_query() {
     let s_a = make_section("A");
     let s_a2 = make_section("A2");
     let s_jobs = make_section("jobs");
@@ -1274,4 +1402,40 @@ fn test_din_provided_query() {
         s_jobs.find_provided_query(dir_to_check(), 100).unwrap(),
         "jobs@100.sql"
     );
+}
+
+#[test]
+fn test_get_instances() {
+    let instances = platform::registry::get_instances();
+    #[cfg(windows)]
+    {
+        assert!(!instances.is_empty());
+        for instance in instances {
+            assert!(instance.final_port().is_some());
+            assert!(instance.is_shared_memory());
+            assert!(!instance.is_pipe());
+        }
+    }
+
+    #[cfg(unix)]
+    assert!(instances.is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn test_odbc() {
+    let s = odbc::make_connection_string(
+        &InstanceName::from("SQLEXPRESS_NAME".to_string()),
+        Some("master"),
+        None,
+    );
+    let r = odbc::execute(&s, sqls::find_known_query(sqls::Id::TableSpaces).unwrap()).unwrap();
+    assert_eq!(r.len(), 2);
+    assert_eq!(r[0].headline.len(), 3);
+    assert_eq!(r[1].headline.len(), 4);
+
+    let r = odbc::execute(&s, sqls::find_known_query(sqls::Id::ComputerName).unwrap()).unwrap();
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].headline[0], "MachineName");
+    assert!(!r[0].rows[0][0].is_empty());
 }

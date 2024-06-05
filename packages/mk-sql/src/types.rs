@@ -4,7 +4,7 @@
 
 use derive_more::{Display, From, Into};
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, PartialOrd, Debug, Clone, From, Into)]
 pub struct Port(pub u16);
 
 impl Port {
@@ -68,3 +68,7 @@ pub struct InstanceAlias(String);
 
 #[derive(PartialEq, From, Clone, Debug, Display, Default, Into)]
 pub struct HostName(String);
+
+/// this is a string as defined by Tiberius API
+#[derive(PartialEq, From, Clone, Debug, Display, Default, Into)]
+pub struct CertPath(String);

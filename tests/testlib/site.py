@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import glob
 import inspect
+import json
 import logging
 import os
 import shutil
@@ -14,20 +15,21 @@ import subprocess
 import sys
 import time
 import urllib.parse
-from collections.abc import Callable, Iterator, Mapping, MutableMapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 from pprint import pformat
 from typing import Final, Literal
 
 import pytest
+import pytest_check  # type: ignore[import-untyped]
 
 from tests.testlib.openapi_session import CMKOpenApiSession
 from tests.testlib.utils import (
     check_output,
+    cse_create_onboarding_dummies,
     cse_openid_oauth_provider,
     current_base_branch_name,
-    current_branch_version,
     execute,
     is_containerized,
     makedirs,
@@ -39,17 +41,18 @@ from tests.testlib.utils import (
     wait_until,
     write_file,
 )
-from tests.testlib.version import CMKVersion, get_min_version, version_from_env, version_gte
+from tests.testlib.version import CMKVersion, get_min_version, version_from_env
 from tests.testlib.web_session import CMKWebSession
 
 import livestatus
 
 from cmk.utils.crypto.secrets import Secret
-from cmk.utils.paths import counters_dir, piggyback_dir, piggyback_source_dir
 from cmk.utils.version import Edition, Version
 
 logger = logging.getLogger(__name__)
 
+ADMIN_USER: Final[str] = "cmkadmin"
+AUTOMATION_USER: Final[str] = "automation"
 PYTHON_VERSION_MAJOR, PYTHON_VERSION_MINOR = sys.version_info.major, sys.version_info.minor
 
 
@@ -63,6 +66,7 @@ class Site:
         update: bool = False,
         update_conflict_mode: str = "install",
         enforce_english_gui: bool = True,
+        check_wait_timeout: int = 20,
     ) -> None:
         assert site_id
         self.id = site_id
@@ -82,12 +86,15 @@ class Site:
         self.update_conflict_mode = update_conflict_mode
         self.enforce_english_gui = enforce_english_gui
 
+        self.check_wait_timeout = check_wait_timeout
+
         self.openapi = CMKOpenApiSession(
             host=self.http_address,
             port=self.apache_port if self.exists() else 80,
-            user="automation" if self.exists() else "cmkadmin",
+            user=AUTOMATION_USER if self.exists() else ADMIN_USER,
             password=self.get_automation_secret() if self.exists() else self.admin_password,
             site=self.id,
+            site_version=self.version,
         )
 
     @property
@@ -182,7 +189,7 @@ class Site:
         state: int,
         output: str,
         expected_state: int | None = None,
-        wait_timeout: int = 20,
+        wait_timeout: int | None = None,
     ) -> None:
         if expected_state is None:
             expected_state = state
@@ -206,7 +213,7 @@ class Site:
         state: int,
         output: str,
         expected_state: int | None = None,
-        wait_timeout: int = 20,
+        wait_timeout: int | None = None,
     ) -> None:
         if expected_state is None:
             expected_state = state
@@ -230,7 +237,7 @@ class Site:
         hostname: str,
         service_description: str,
         expected_state: int | None = None,
-        wait_timeout: int = 20,
+        wait_timeout: int | None = None,
     ) -> None:
         logger.debug("%s;%s schedule check", hostname, service_description)
         last_check_before = self._last_service_check(hostname, service_description)
@@ -260,23 +267,23 @@ class Site:
         """Reschedule services in the test-site for a given host until no pending services are
         found."""
         count = 0
-        pending_services = self.get_host_services(hostname, pending=True)
-
-        # reschedule services
-        self.schedule_check(hostname, "Check_MK", 0)
-
-        while len(pending_services) > 0 and count < max_count:
+        while (
+            len(pending_services := self.get_host_services(hostname, pending=True)) > 0
+            and count < max_count
+        ):
             logger.info(
-                "The following services in %s host were found with pending status:\n%s.\n"
+                "The following services in %s host are in pending state:\n%s\n"
                 "Rescheduling checks...",
                 hostname,
                 pformat(pending_services),
             )
             self.schedule_check(hostname, "Check_MK", 0)
-            pending_services = self.get_host_services(hostname, pending=True)
             count += 1
 
-        assert len(pending_services) == 0
+        assert len(pending_services) == 0, (
+            "The following services are in pending state after rescheduling checks:"
+            f"\n{pformat(pending_services)}\n"
+        )
 
     def get_host_services(self, hostname: str, pending: bool = False) -> dict[str, ServiceInfo]:
         """Return dict for all services in the given site and host.
@@ -323,14 +330,14 @@ class Site:
         last_check_before: float,
         command_timestamp: float,
         expected_state: int | None = None,
-        wait_timeout: int = 20,
+        wait_timeout: int | None = None,
     ) -> None:
         query: str = (
             "GET hosts\n"
             "Columns: last_check state plugin_output\n"
             f"Filter: host_name = {hostname}\n"
             f"WaitObject: {hostname}\n"
-            f"WaitTimeout: {wait_timeout*1000:d}\n"
+            f"WaitTimeout: {wait_timeout or self.check_wait_timeout * 1000:d}\n"
             f"WaitTrigger: check\n"
             f"WaitCondition: last_check > {last_check_before:.0f}\n"
         )
@@ -354,7 +361,7 @@ class Site:
         last_check_before: float,
         command_timestamp: float,
         expected_state: int | None = None,
-        wait_timeout: int = 20,
+        wait_timeout: int | None = None,
     ) -> None:
         query: str = (
             "GET services\n"
@@ -362,7 +369,7 @@ class Site:
             f"Filter: host_name = {hostname}\n"
             f"Filter: description = {service_description}\n"
             f"WaitObject: {hostname};{service_description}\n"
-            f"WaitTimeout: {wait_timeout*1000:d}\n"
+            f"WaitTimeout: {(wait_timeout or self.check_wait_timeout) * 1000:d}\n"
             f"WaitCondition: last_check > {last_check_before:.0f}\n"
             "WaitCondition: has_been_checked = 1\n"
             "WaitTrigger: check\n"
@@ -380,20 +387,20 @@ class Site:
             wait_timeout,
         )
 
-    @staticmethod
     def _verify_next_check_output(
+        self,
         command_timestamp: float,
         last_check: float,
         last_check_before: float,
         state: int,
         expected_state: int | None,
         plugin_output: str,
-        wait_timeout: int = 20,
+        wait_timeout: int | None = None,
     ) -> None:
         logger.debug("processing check result took %0.2f seconds", time.time() - command_timestamp)
         if not last_check > last_check_before:
             raise TimeoutError(
-                f"Check result not processed within {wait_timeout} seconds "
+                f"Check result not processed within {wait_timeout or self.check_wait_timeout} seconds "
                 f"(last check before reschedule: {last_check_before:.0f}, "
                 f"scheduled at: {command_timestamp:.0f}, last check: {last_check:.0f})"
             )
@@ -481,17 +488,17 @@ class Site:
 
         return completed_process.returncode
 
-    def path(self, rel_path: str) -> str:
+    def path(self, rel_path: str | Path) -> str:
         return os.path.join(self.root, rel_path)
 
-    def read_file(self, rel_path: str) -> str:
+    def read_file(self, rel_path: str | Path) -> str:
         p = self.execute(["cat", self.path(rel_path)], stdout=subprocess.PIPE)
         stdout = p.communicate()[0]
         if p.returncode != 0:
             raise Exception("Failed to read file %s. Exit-Code: %d" % (rel_path, p.wait()))
         return stdout if isinstance(stdout, str) else ""
 
-    def read_binary_file(self, rel_path: str) -> bytes:
+    def read_binary_file(self, rel_path: str | Path) -> bytes:
         p = self.execute(["cat", self.path(rel_path)], stdout=subprocess.PIPE, encoding=None)
         stdout = p.communicate()[0]
         if p.returncode != 0:
@@ -499,21 +506,21 @@ class Site:
         assert isinstance(stdout, bytes)
         return stdout
 
-    def delete_file(self, rel_path: str) -> None:
+    def delete_file(self, rel_path: str | Path) -> None:
         p = self.execute(["rm", "-f", self.path(rel_path)])
         if p.wait() != 0:
             raise Exception("Failed to delete file %s. Exit-Code: %d" % (rel_path, p.wait()))
 
-    def delete_dir(self, rel_path: str) -> None:
+    def delete_dir(self, rel_path: str | Path) -> None:
         p = self.execute(["rm", "-rf", self.path(rel_path)])
         if p.wait() != 0:
             raise Exception("Failed to delete directory %s. Exit-Code: %d" % (rel_path, p.wait()))
 
-    def write_text_file(self, rel_path: str, content: str) -> None:
+    def write_text_file(self, rel_path: str | Path, content: str) -> None:
         write_file(self.path(str(rel_path)), content, sudo=True, substitute_user=self.id)
 
     def write_binary_file(self, rel_path: str, content: bytes) -> None:
-        write_file(self.path(str(rel_path)), content, sudo=True, substitute_user=self.id)
+        write_file(self.path(rel_path), content, sudo=True, substitute_user=self.id)
 
     def create_rel_symlink(self, link_rel_target: str, rel_link_name: str) -> None:
         with self.execute(
@@ -536,31 +543,31 @@ class Site:
             raise Exception(f"Failed to read symlink at {rel_path}. No stdout.")
         return Path(p.stdout.read().strip())
 
-    def file_exists(self, rel_path: str) -> bool:
+    def file_exists(self, rel_path: str | Path) -> bool:
         p = self.execute(["test", "-e", self.path(rel_path)], stdout=subprocess.PIPE)
         return p.wait() == 0
 
-    def is_file(self, rel_path: str) -> bool:
+    def is_file(self, rel_path: str | Path) -> bool:
         return self.execute(["test", "-f", self.path(rel_path)]).wait() == 0
 
-    def is_dir(self, rel_path: str) -> bool:
+    def is_dir(self, rel_path: str | Path) -> bool:
         return self.execute(["test", "-d", self.path(rel_path)]).wait() == 0
 
-    def file_mode(self, rel_path: str) -> int:
+    def file_mode(self, rel_path: str | Path) -> int:
         return int(self.check_output(["stat", "-c", "%f", self.path(rel_path)]).rstrip(), base=16)
 
-    def inode(self, rel_path: str) -> int:
+    def inode(self, rel_path: str | Path) -> int:
         return int(self.check_output(["stat", "-c", "%i", self.path(rel_path)]).rstrip())
 
-    def makedirs(self, rel_path: str) -> bool:
+    def makedirs(self, rel_path: str | Path) -> bool:
         return makedirs(self.path(rel_path), sudo=True, substitute_user=self.id)
 
     def reset_admin_password(self, new_password: str | None = None) -> None:
         self.check_output(
-            ["cmk-passwd", "-i", "cmkadmin"], input=new_password or self.admin_password
+            ["cmk-passwd", "-i", ADMIN_USER], input=new_password or self.admin_password
         )
 
-    def listdir(self, rel_path: str) -> list[str]:
+    def listdir(self, rel_path: str | Path) -> list[str]:
         p = self.execute(["ls", "-1", self.path(rel_path)], stdout=subprocess.PIPE)
         output = p.communicate()[0].strip()
         assert p.wait() == 0
@@ -626,28 +633,30 @@ class Site:
         if self.update or not self.exists():
             logger.info('Updating site "%s"' if self.update else 'Creating site "%s"', self.id)
             completed_process = subprocess.run(
-                [
-                    "/usr/bin/sudo",
-                    "omd",
-                    "-f",
-                    "-V",
-                    self.version.version_directory(),
-                    "update",
-                    f"--conflict={self.update_conflict_mode}",
-                    self.id,
-                ]
-                if self.update
-                else [
-                    "/usr/bin/sudo",
-                    "omd",
-                    "-V",
-                    self.version.version_directory(),
-                    "create",
-                    "--admin-password",
-                    self.admin_password,
-                    "--apache-reload",
-                    self.id,
-                ],
+                (
+                    [
+                        "/usr/bin/sudo",
+                        "omd",
+                        "-f",
+                        "-V",
+                        self.version.version_directory(),
+                        "update",
+                        f"--conflict={self.update_conflict_mode}",
+                        self.id,
+                    ]
+                    if self.update
+                    else [
+                        "/usr/bin/sudo",
+                        "omd",
+                        "-V",
+                        self.version.version_directory(),
+                        "create",
+                        "--admin-password",
+                        self.admin_password,
+                        "--apache-reload",
+                        self.id,
+                    ]
+                ),
                 check=False,
                 capture_output=True,
                 encoding="utf-8",
@@ -679,10 +688,12 @@ class Site:
 
         self.openapi.port = self.apache_port
         self.openapi.set_authentication_header(
-            user="automation", password=self.get_automation_secret()
+            user=AUTOMATION_USER, password=self.get_automation_secret()
         )
         # set the sites timezone according to TZ
         self.set_timezone(os.getenv("TZ", ""))
+
+        self.toggle_autostart(enabled=False)
 
     def _ensure_sample_config_is_present(self) -> None:
         if missing_files := self._missing_but_required_wato_files():
@@ -807,17 +818,21 @@ class Site:
 
     def _enable_gui_debug_logging(self) -> None:
         self.makedirs("etc/check_mk/multisite.d")
+        # 10: debug
+        # 15: verbose
+        # 20: informational
+        # 30: warning (default)
         self.write_text_file(
             "etc/check_mk/multisite.d/logging.mk",
             "log_levels = %r\n"
             % {
-                "cmk.web": 10,
-                "cmk.web.ldap": 10,
-                "cmk.web.saml2": 10,
-                "cmk.web.auth": 10,
-                "cmk.web.bi.compilation": 10,
-                "cmk.web.automations": 10,
-                "cmk.web.background-job": 10,
+                "cmk.web": 15,
+                "cmk.web.ldap": 15,
+                "cmk.web.saml2": 15,
+                "cmk.web.auth": 15,
+                "cmk.web.bi.compilation": 15,
+                "cmk.web.automations": 15,
+                "cmk.web.background-job": 15,
             },
         )
 
@@ -916,7 +931,7 @@ class Site:
             omd_status_output = self.execute(
                 ["omd", "status"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT
             ).communicate()[0]
-            ps_output_file = os.path.join(self.result_dir(), "processes.out")
+            ps_output_file = self.result_dir() / "processes.out"
             self.write_text_file(
                 ps_output_file,
                 self.execute(
@@ -924,6 +939,8 @@ class Site:
                 ).communicate()[0],
             )
             self.save_results()
+
+            self.report_crashes()
 
             pytest.exit(
                 "Site was not running completely while it should be! Enforcing stop.\n\n"
@@ -1035,12 +1052,12 @@ class Site:
         r = web.get("user_profile.py")
         assert "Edit profile" in r.text, "Body: %s" % r.text
 
-        if (user := self.openapi.get_user("cmkadmin")) is None:
+        if (user := self.openapi.get_user(ADMIN_USER)) is None:
             raise Exception("User cmkadmin not found!")
         user_spec, etag = user
         user_spec["language"] = "en"
         user_spec.pop("enforce_password_change", None)
-        self.openapi.edit_user("cmkadmin", user_spec, etag)
+        self.openapi.edit_user(ADMIN_USER, user_spec, etag)
 
         # Verify the language is as expected now
         r = web.get("user_profile.py", allow_redirect_to_login=True)
@@ -1090,6 +1107,9 @@ class Site:
         self.set_config("LIVEPROXYD", "on" if enabled else "off", with_restart=True)
         assert self.file_exists("tmp/run/liveproxyd.pid") == enabled
 
+    def toggle_autostart(self, enabled: bool = True) -> None:
+        self.set_config("AUTOSTART", "on" if enabled else "off", with_restart=True)
+
     def save_results(self) -> None:
         if not is_containerized():
             logger.info("Not containerized: not copying results")
@@ -1102,38 +1122,65 @@ class Site:
 
         shutil.copytree(
             self.path("var/log"),
-            "%s/logs" % self.result_dir(),
+            self.result_dir() / "logs",
             ignore_dangling_symlinks=True,
             ignore=shutil.ignore_patterns(".*"),
             dirs_exist_ok=True,
         )
 
         for nagios_log_path in glob.glob(self.path("var/nagios/*.log")):
-            shutil.copy(nagios_log_path, "%s/logs" % self.result_dir())
+            shutil.copy(nagios_log_path, self.result_dir() / "logs")
 
-        cmc_dir = "%s/cmc" % self.result_dir()
+        cmc_dir = self.result_dir() / "cmc"
         os.makedirs(cmc_dir, exist_ok=True)
 
         with suppress(FileNotFoundError):
-            shutil.copy(self.path("var/check_mk/core/history"), "%s/history" % cmc_dir)
+            shutil.copy(self.path("var/check_mk/core/history"), cmc_dir / "history")
 
         with suppress(FileNotFoundError):
-            shutil.copy(self.path("var/check_mk/core/core"), "%s/core_dump" % cmc_dir)
+            shutil.copy(self.path("var/check_mk/core/core"), cmc_dir / "core_dump")
 
         with suppress(FileNotFoundError):
             shutil.copytree(
-                self.path("var/check_mk/crashes"),
-                "%s/crashes" % self.result_dir(),
+                self.crash_report_dir,
+                self.crash_archive_dir,
                 ignore=shutil.ignore_patterns(".*"),
                 dirs_exist_ok=True,
             )
 
             # Rename files to get better handling by the browser when opening a crash file
-            for crash_info in Path("var/check_mk/crashes").glob("**/crash.info"):
+            for crash_info in self.crash_archive_dir.glob("**/crash.info"):
                 crash_info.rename(crash_info.parent / (crash_info.stem + ".json"))
 
-    def result_dir(self) -> str:
-        return os.path.join(os.environ.get("RESULT_PATH", self.path("results")), self.id)
+    def report_crashes(self):
+        crash_dirs = [
+            self.crash_report_dir / crash_type / crash_id
+            for crash_type in self.listdir(self.crash_report_dir)
+            for crash_id in self.listdir(self.crash_report_dir / crash_type)
+        ]
+        for crash_dir in crash_dirs:
+            crash_file = crash_dir / "crash.info"
+            if not os.path.exists(crash_file):
+                pytest_check.fail(f"Crash report detected!\nSee {crash_dir} for more details.")
+                continue
+            crash = json.loads(self.read_file(crash_file))
+            crash_type = crash.get("exc_type", "")
+            crash_detail = crash.get("exc_value", "")
+            pytest_check.fail(
+                f"""Crash report detected! {crash_type}: {crash_detail}.
+                See {crash_file} for more details."""
+            )
+
+    def result_dir(self) -> Path:
+        return Path(os.environ.get("RESULT_PATH", self.path("results"))) / self.id
+
+    @property
+    def crash_report_dir(self) -> Path:
+        return Path(self.root) / "var/check_mk/crashes"
+
+    @property
+    def crash_archive_dir(self) -> Path:
+        return self.result_dir() / "crashes"
 
     def get_automation_secret(self) -> str:
         secret_path = "var/check_mk/web/automation/automation.secret"
@@ -1241,7 +1288,7 @@ class SiteFactory:
     ) -> None:
         self.version = version
         self._base_ident = prefix if prefix is not None else "s_%s_" % version.branch[:6]
-        self._sites: MutableMapping[str, Site] = {}
+        self._sites: dict[str, Site] = {}
         self._index = 1
         self._update = update
         self._update_conflict_mode = update_conflict_mode
@@ -1258,6 +1305,7 @@ class SiteFactory:
         init_livestatus: bool = True,
         prepare_for_tests: bool = True,
         activate_changes: bool = True,
+        auto_restart_httpd: bool = False,
     ) -> Site:
         site = self._site_obj(name)
 
@@ -1271,12 +1319,23 @@ class SiteFactory:
 
         site.start()
 
+        if self.version.is_saas_edition():
+            cse_create_onboarding_dummies(site.root)
+
         if prepare_for_tests:
-            site.prepare_for_tests()
+            with (
+                cse_openid_oauth_provider(f"http://localhost:{site.apache_port}")
+                if self.version.is_saas_edition()
+                else nullcontext()
+            ):
+                site.prepare_for_tests()
 
         if activate_changes:
             # There seem to be still some changes that want to be activated
             site.activate_changes_and_wait_for_core_reload()
+
+        if auto_restart_httpd:
+            restart_httpd()
 
         logger.debug("Created site %s", site.id)
         return site
@@ -1313,7 +1372,9 @@ class SiteFactory:
         logger.info("Creating %s site from backup...", name)
 
         omd_restore_cmd = (
-            ["sudo", "omd", "restore"] + (["--reuse", "--kill"] if reuse else []) + [backup_path]
+            ["sudo", "omd", "restore", "--apache-reload"]
+            + (["--reuse", "--kill"] if reuse else [])
+            + [backup_path]
         )
 
         completed_process = subprocess.run(
@@ -1332,10 +1393,12 @@ class SiteFactory:
 
         return site
 
-    def interactive_create(self, name: str, logfile_path: str = "/tmp/omd_install.out") -> Site:
+    def interactive_create(
+        self, name: str, logfile_path: str = "/tmp/omd_install.out", timeout: int = 60
+    ) -> Site:
         """Interactive site creation via Pexpect"""
         self._base_ident = ""
-        site = self._site_obj(name)
+        site = self._site_obj(name, check_wait_timeout=30)
         site.install_cmk()
 
         rc = spawn_expect_process(
@@ -1352,6 +1415,7 @@ class SiteFactory:
             ],
             dialogs=[],
             logfile_path=logfile_path,
+            timeout=timeout,
         )
 
         assert rc == 0, f"Executed command returned {rc} exit status. Expected: 0"
@@ -1382,33 +1446,39 @@ class SiteFactory:
         min_version: CMKVersion,
         conflict_mode: str = "keepold",
         logfile_path: str = "/tmp/sep.out",
+        timeout: int = 60,
     ) -> Site:
         """Update the test-site with the given target-version, if supported.
 
         Such update process is performed interactively via Pexpect.
         """
+        base_version = test_site.version
         self.version = target_version
-        site = self.get_existing_site(test_site.id)
+
+        # refresh site object to install the correct target version
+        self._base_ident = ""
+        site = self.get_existing_site(test_site.id, init_livestatus=False)
+
         site.install_cmk()
         site.stop()
 
         logger.info(
             "Updating %s site from %s version to %s version...",
-            test_site.id,
-            test_site.version.version,
+            site.id,
+            base_version.version,
             target_version.version_directory(),
         )
 
         pexpect_dialogs = []
-        version_supported = self._version_supported(test_site.version.version, min_version.version)
+        version_supported = base_version >= min_version
         if version_supported:
             logger.info("Updating to a supported version.")
             pexpect_dialogs.extend(
                 [
                     PExpectDialog(
                         expect=(
-                            f"You are going to update the site {test_site.id} "
-                            f"from version {test_site.version.version_directory()} "
+                            f"You are going to update the site {site.id} "
+                            f"from version {base_version.version_directory()} "
                             f"to version {target_version.version_directory()}."
                         ),
                         send="u\r",
@@ -1418,8 +1488,8 @@ class SiteFactory:
         else:  # update-process not supported. Still, verify the correct message is displayed
             logger.info(
                 "Updating from version %s to version %s is not supported",
-                min_version,
-                target_version,
+                base_version.version_directory(),
+                target_version.version_directory(),
             )
 
             pexpect_dialogs.extend(
@@ -1427,7 +1497,7 @@ class SiteFactory:
                     PExpectDialog(
                         expect=(
                             f"ERROR: You are trying to update from "
-                            f"{test_site.version.version_directory()} to "
+                            f"{base_version.version_directory()} to "
                             f"{target_version.version_directory()} which is not supported."
                         ),
                         send="\r",
@@ -1447,36 +1517,36 @@ class SiteFactory:
                 target_version.version_directory(),
                 "update",
                 f"--conflict={conflict_mode}",
-                test_site.id,
+                site.id,
             ],
             dialogs=pexpect_dialogs,
             logfile_path=logfile_path,
+            timeout=timeout,
         )
         if version_supported:
             assert rc == 0, f"Executed command returned {rc} exit status. Expected: 0"
         else:
             assert rc == 256, f"Executed command returned {rc} exit status. Expected: 256"
-            pytest.skip(f"{test_site.version} is not a supported version for {target_version}")
+            pytest.skip(f"{base_version} is not a supported version for {target_version}")
 
         with open(logfile_path) as logfile:
             logger.debug("OMD automation logfile: %s", logfile.read())
 
         # refresh the site object after creating the site
-        self._base_ident = ""
         site = self.get_existing_site(test_site.id)
 
         # restoring the tmpfs was broken and has been fixed with
         # 3448a7da56ed6d4fa2c2f425d0b1f4b6e02230aa
-        from_version = Version.from_str(test_site.version.version)
+        from_version = Version.from_str(base_version.version)
         if (
             (Version.from_str("2.1.0p36") <= from_version < Version.from_str("2.2.0"))
             or (Version.from_str("2.2.0p13") <= from_version < Version.from_str("2.3.0"))
             or Version.from_str("2.3.0b1") <= from_version
         ):
             # tmpfs should have been restored:
-            assert os.path.exists(site.path(counters_dir))
-            assert os.path.exists(site.path(str(piggyback_dir)))
-            assert os.path.exists(site.path(str(piggyback_source_dir)))
+            assert os.path.exists(site.path("tmp/check_mk/counters"))
+            assert os.path.exists(site.path("tmp/check_mk/piggyback"))
+            assert os.path.exists(site.path("tmp/check_mk/piggyback_sources"))
 
         # open the livestatus port
         site.open_livestatus_tcp(encrypted=False)
@@ -1504,28 +1574,27 @@ class SiteFactory:
             fallback_edition=Edition.CEE,
             fallback_branch=current_base_branch_name(),
         ),
-        min_version: CMKVersion = CMKVersion(
-            get_min_version(),
-            Edition.CEE,
-            current_base_branch_name(),
-            current_branch_version(),
-        ),
+        min_version: CMKVersion = get_min_version(Edition.CEE),
         conflict_mode: str = "keepold",
     ) -> Site:
-        version_supported = self._version_supported(test_site.version.version, min_version.version)
-        if not version_supported:
-            pytest.skip(
-                f"{test_site.version} is not a supported version for {target_version.version}"
-            )
+        base_version = test_site.version
         self.version = target_version
-        site = self.get_existing_site("central", init_livestatus=False)
+
+        version_supported = base_version >= min_version
+        if not version_supported:
+            pytest.skip(f"{base_version} is not a supported version for {target_version.version}")
+
+        # refresh site object to install the correct target version
+        self._base_ident = ""
+        site = self.get_existing_site(test_site.id, init_livestatus=False)
+
         site.install_cmk()
         site.stop()
 
         logger.info(
             "Updating %s site from %s version to %s version...",
-            test_site.id,
-            test_site.version.version,
+            site.id,
+            base_version.version,
             target_version.version_directory(),
         )
 
@@ -1537,13 +1606,13 @@ class SiteFactory:
             "update",
             f"--conflict={conflict_mode}",
         ]
-        test_site.stop()
-        process = test_site.execute(cmd)
+
+        process = site.execute(cmd)
         rc = process.wait()
         assert rc == 0, process.stderr
 
         # refresh the site object after creating the site
-        site = self.get_existing_site("central")
+        site = self.get_existing_site(site.id)
         # open the livestatus port
         site.open_livestatus_tcp(encrypted=False)
         # start the site after manually installing it
@@ -1561,12 +1630,7 @@ class SiteFactory:
 
         site.openapi.activate_changes_and_wait_for_completion()
 
-        return test_site
-
-    @staticmethod
-    def _version_supported(version: str, min_version: str) -> bool:
-        """Check if the given version is supported for updating."""
-        return version_gte(version, min_version)
+        return site
 
     def get_test_site(
         self,
@@ -1597,7 +1661,7 @@ class SiteFactory:
             site = self.get_site(
                 name,
                 init_livestatus=init_livestatus,
-                prepare_for_tests=not self.version.is_saas_edition(),
+                prepare_for_tests=True,
             )
         site.start()
         if auto_restart_httpd:
@@ -1607,18 +1671,18 @@ class SiteFactory:
             site.id,
             f" [{description}]" if description else "",
         )
-        with cse_openid_oauth_provider(
-            f"http://localhost:{site.apache_port}"
-        ) if self.version.is_saas_edition() else nullcontext():
-            if self.version.is_saas_edition():
-                site.prepare_for_tests()
-                site.activate_changes_and_wait_for_core_reload()
+        with (
+            cse_openid_oauth_provider(f"http://localhost:{site.apache_port}")
+            if self.version.is_saas_edition()
+            else nullcontext()
+        ):
             try:
                 yield site
             finally:
                 # teardown: saving results and removing site
                 if save_results:
                     site.save_results()
+                site.report_crashes()
                 if auto_cleanup and cleanup_site:
                     logger.info('Dropping site "%s" (CLEANUP=1)', site.id)
                     site.rm()
@@ -1640,7 +1704,7 @@ class SiteFactory:
         self._index += 1
         return new_ident
 
-    def _site_obj(self, name: str) -> Site:
+    def _site_obj(self, name: str, check_wait_timeout: int = 20) -> Site:
         if f"{self._base_ident}{name}" in self._sites:
             return self._sites[f"{self._base_ident}{name}"]
         # For convenience, allow to retrieve site by name or full ident
@@ -1655,6 +1719,7 @@ class SiteFactory:
             reuse=False,
             update=self._update,
             enforce_english_gui=self._enforce_english_gui,
+            check_wait_timeout=check_wait_timeout,
         )
 
     def save_results(self) -> None:
@@ -1662,6 +1727,12 @@ class SiteFactory:
         for _site_id, site in sorted(self._sites.items(), key=lambda x: x[0]):
             logger.info("Saving results of site %s", site.id)
             site.save_results()
+
+    def report_crashes(self) -> None:
+        logger.info("Reporting crashes")
+        for _site_id, site in sorted(self._sites.items(), key=lambda x: x[0]):
+            logger.info("Reporting crashes of site %s", site.id)
+            site.report_crashes()
 
     def cleanup(self) -> None:
         logger.info("Removing sites")

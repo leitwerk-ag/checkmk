@@ -14,7 +14,7 @@ expected_attributes = {
     "additional_ipv4addresses": {
         "class_name": "ValueSpecAttribute",
         "depends_on_roles": [],
-        "depends_on_tags": [],
+        "depends_on_tags": ["ip-v4"],
         "editable": True,
         "from_config": False,
         "show_in_folder": False,
@@ -27,7 +27,7 @@ expected_attributes = {
     "additional_ipv6addresses": {
         "class_name": "ValueSpecAttribute",
         "depends_on_roles": [],
-        "depends_on_tags": [],
+        "depends_on_tags": ["ip-v6"],
         "editable": True,
         "from_config": False,
         "show_in_folder": False,
@@ -463,9 +463,6 @@ def test_legacy_register_rulegroup_without_defaults(
     [
         ("Basic settings", "basic"),
         ("Management board", "management_board"),
-        ("Custom attributes", "custom_attributes"),
-        ("Eigene Attribute", "custom_attributes"),
-        ("xyz_unknown", "custom_attributes"),
     ],
 )
 def test_custom_host_attribute_transform(old: str, new: str) -> None:

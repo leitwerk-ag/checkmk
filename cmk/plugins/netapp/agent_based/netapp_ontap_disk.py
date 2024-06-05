@@ -6,8 +6,18 @@
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from cmk.agent_based.v2 import AgentSection, CheckPlugin, InventoryPlugin, render, Service, TableRow
-from cmk.agent_based.v2.type_defs import CheckResult, DiscoveryResult, InventoryResult, StringTable
+from cmk.agent_based.v2 import (
+    AgentSection,
+    CheckPlugin,
+    CheckResult,
+    DiscoveryResult,
+    InventoryPlugin,
+    InventoryResult,
+    render,
+    Service,
+    StringTable,
+    TableRow,
+)
 from cmk.plugins.lib.filerdisks import (
     check_filer_disks,
     FILER_DISKS_CHECK_DEFAULT_PARAMETERS,
@@ -72,7 +82,7 @@ def discovery_netapp_ontap_disk_summary(section: Section) -> DiscoveryResult:
 def check_netapp_ontap_disk_summary(params: Mapping[str, Any], section: Section) -> CheckResult:
     """
     Unlike the old netapp api with the new api "physical-space" and "disk-type" are missing.
-    Cfr the old plugin to see where they were used.
+    Cfr the old plug-in to see where they were used.
     """
 
     if "broken_spare_ratio" in params:

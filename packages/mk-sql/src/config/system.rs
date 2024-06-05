@@ -6,7 +6,7 @@ use crate::config::yaml::{Get, Yaml};
 use crate::utils;
 use anyhow::Result;
 use std::path::Path;
-use yaml_rust::YamlLoader;
+use yaml_rust2::YamlLoader;
 
 mod keys {
     pub const SYSTEM: &str = "system";
@@ -39,7 +39,7 @@ pub struct Logging {
 impl Logging {
     pub fn from_string(source: &str) -> Result<Option<Self>> {
         YamlLoader::load_from_str(source)?
-            .get(0)
+            .first()
             .and_then(|e| Logging::from_yaml(e).transpose())
             .transpose()
     }
@@ -95,13 +95,13 @@ impl SystemConfig {
 
     pub fn from_string(source: &str) -> Result<Self> {
         YamlLoader::load_from_str(source)?
-            .get(0)
+            .first()
             .map(SystemConfig::from_yaml)
             .unwrap_or_else(|| Ok(Self::default()))
     }
 
     pub fn from_yaml(yaml: &Yaml) -> Result<Self> {
-        let system: &yaml_rust::Yaml = yaml.get(keys::SYSTEM);
+        let system: &yaml_rust2::Yaml = yaml.get(keys::SYSTEM);
         if system.is_badvalue() {
             return Ok(Self::default());
         }

@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# pylint: disable=protected-access
+
 import math
 from collections.abc import Callable
 from unittest.mock import Mock
@@ -13,7 +15,6 @@ from cmk.utils.metrics import MetricName
 
 from cmk.checkengine.submitters import ServiceDetails, ServiceState
 
-import cmk.base.config as config
 from cmk.base import check_api
 
 
@@ -89,6 +90,6 @@ def test_check_levels(  # type: ignore[no-untyped-def]
 
 
 def test_http_proxy(mocker: Mock) -> None:
-    proxy_patch = mocker.patch.object(config, "get_http_proxy")
+    proxy_patch = mocker.patch.object(check_api, "_get_http_proxy")
     check_api.get_http_proxy(("url", "http://xy:123"))
     proxy_patch.assert_called_once()

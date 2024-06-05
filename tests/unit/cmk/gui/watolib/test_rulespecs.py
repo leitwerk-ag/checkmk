@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# pylint: disable=protected-access
+
 
 from collections.abc import Sequence
 
@@ -168,7 +170,7 @@ def _expected_rulespec_group_choices():
 
     if cmk_version.edition() is not cmk_version.Edition.CRE:
         expected += [
-            ("agents/agent_plugins", "&nbsp;&nbsp;\u2319 Agent Plugins"),
+            ("agents/agent_plugins", "&nbsp;&nbsp;\u2319 Agent plug-ins"),
             ("agents/automatic_updates", "&nbsp;&nbsp;\u2319 Automatic Updates"),
             ("agents/linux_agent", "&nbsp;&nbsp;\u2319 Linux Agent"),
             ("agents/windows_agent", "&nbsp;&nbsp;\u2319 Windows Agent"),

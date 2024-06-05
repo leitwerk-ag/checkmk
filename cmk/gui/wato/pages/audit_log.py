@@ -7,7 +7,7 @@
 import time
 from collections.abc import Collection, Iterator
 
-import cmk.utils.render as render
+from cmk.utils import render
 
 from cmk.gui.breadcrumb import Breadcrumb
 from cmk.gui.display_options import display_options
@@ -43,6 +43,7 @@ from cmk.gui.valuespec import (
     Integer,
     RegExp,
     TextInput,
+    ValueSpec,
 )
 from cmk.gui.wato.pages.activate_changes import render_object_ref
 from cmk.gui.watolib.audit_log import AuditLogFilterRaw, AuditLogStore, build_audit_log_filter
@@ -261,6 +262,9 @@ class ModeAuditLog(WatoMode):
             return HTML(output_funnel.drain())
 
     def action(self) -> ActionResult:
+        if not transactions.check_transaction():
+            return None
+
         if request.var("_action") == "clear":
             user.need_permission("wato.auditlog")
             user.need_permission("wato.clear_auditlog")
@@ -271,7 +275,7 @@ class ModeAuditLog(WatoMode):
             user.need_permission("wato.auditlog")
             return self._export_audit_log(self._parse_audit_log())
 
-        return None
+        return redirect(makeuri(request, []))
 
     def page(self) -> None:
         with html.form_context("fileselection_form", method="POST"):
@@ -540,7 +544,7 @@ class ModeAuditLog(WatoMode):
 
             for name, vs in self._audit_log_options():
 
-                def renderer(name=name, vs=vs) -> None:  # type: ignore[no-untyped-def]
+                def renderer(name: str = name, vs: ValueSpec = vs) -> None:
                     vs.render_input("options_" + name, self._options[name])
 
                 html.render_floating_option(name, "single", vs.title(), renderer)

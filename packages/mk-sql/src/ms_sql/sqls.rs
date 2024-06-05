@@ -35,19 +35,10 @@ pub enum Id {
 }
 
 mod query {
-    // TODO(sk): replace with "SELECT SERVERPROPERTY( 'MachineName' ) as MachineName"
-    pub const COMPUTER_NAME: &str = r"DECLARE @ComputerName NVARCHAR(200);
-DECLARE @main_key NVARCHAR(200) = 'SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName';
-EXECUTE xp_regread
-    @rootkey = 'HKEY_LOCAL_MACHINE',
-    @key = @main_key,
-    @value_name = 'ComputerName',
-    @value = @ComputerName OUTPUT;
-  Select @ComputerName as 'ComputerName'
-";
+    pub const COMPUTER_NAME: &str =
+        "SELECT Upper(Cast(SERVERPROPERTY( 'MachineName' ) as varchar)) as MachineName";
     /// Script to be run in SQL instance
-    pub const WINDOWS_REGISTRY_INSTANCES_BASE: &str = r"
-DECLARE @GetInstances TABLE
+    pub const WINDOWS_REGISTRY_INSTANCES_BASE: &str = r"DECLARE @GetInstances TABLE
 ( Value nvarchar(100),
  InstanceNames nvarchar(100),
  Data nvarchar(100))
@@ -129,9 +120,9 @@ BEGIN
         @key = @port_key,
         @value_name = 'TcpDynamicPorts',
         @value = @DynamicPort OUTPUT;
-    
+
     insert into @GetAll(InstanceNames, InstanceIds, EditionNames, VersionNames, ClusterNames, Ports, DynamicPorts) Values( @InstanceName, @InstanceId, @Edition, @Version, @ClusterName, @Port, @DynamicPort )
-    
+
     -- Get the next instance
     FETCH NEXT FROM instance_cursor INTO @InstanceName;
 END
@@ -156,7 +147,35 @@ SELECT InstanceNames, InstanceIds, EditionNames, VersionNames, ClusterNames,Port
     FROM sys.dm_os_waiting_tasks";
 
     pub const DATABASE_NAMES: &str = "SELECT name FROM sys.databases";
-    pub const SPACE_USED: &str = "EXEC sp_spaceused";
+
+    /// Executes `sp_spaceused` for each database parsing output as resuult set
+    /// Requires nvarchar support
+    pub const SPACE_USED: &str = "EXEC sp_spaceused \
+        WITH RESULT SETS \
+        ( \
+        (database_name nvarchar(128),database_size nvarchar(128), unallocated_space nvarchar(128)), \
+        (reserved nvarchar(128),data nvarchar(128), index_size nvarchar(128), unused nvarchar(128)) \
+        )";
+
+    /// TODO(sk): remove this variant.B after confirm that new script works nice
+    /// Executes `sp_spaceused` with storing data in temp table
+    /// This works only on latest SQL Server versions - 2019 at least
+    pub const _SPACE_USED_FOR_LATEST_SQL_SERVERS: &str = "create table #temp (\
+    database_name sysname,\
+    database_size varchar(18),\
+    [unallocated space] varchar(18),\
+    reserved varchar(18),\
+    data varchar(18),\
+    index_size varchar(18),\
+    unused varchar(18)\
+    );\
+    insert into #temp (database_name,database_size,[unallocated space],reserved,data,index_size,unused) \
+    exec sp_spaceused @oneresultset =1;'\
+    Select * from #temp; \
+    drop table #temp";
+
+    /// TODO(sk): remove this reference to legacy code after confirm that new script works nice
+    pub const _SPACE_USED_ORIGINAL: &str = "EXEC sp_spaceused";
 
     pub const BACKUP: &str = r"DECLARE @HADRStatus sql_variant; DECLARE @SQLCommand nvarchar(max);
 SET @HADRStatus = (SELECT SERVERPROPERTY ('IsHadrEnabled'));
@@ -181,18 +200,35 @@ END
 EXEC (@SQLCommand)
 ";
 
+    //Script to create a table with 'unsupported' collation
+    //master;
+    //GO
+    //IF DB_ID (N'MyOptionsTest') IS NOT NULL
+    //    DROP DATABASE MyOptionsTest;
+    //GO
+    // CREATE DATABASE MyOptionsTest
+    //    COLLATE SQL_Latin1_General_CP850_CI_AS; -- French_CI_AS;
+    // GO
+    //
+    // SELECT name, collation_name
+    // FROM sys.databases
+    // WHERE name = N'MyOptionsTest';
+    //
+
+    /// NOTE: cast( ... as nvarchar) is a workaround gainst unsupported collations
     pub const TRANSACTION_LOGS: &str = "SELECT name, physical_name,\
   cast(max_size/128 as bigint) as MaxSize,\
   cast(size/128 as bigint) as AllocatedSize,\
   cast(FILEPROPERTY (name, 'spaceused')/128 as bigint) as UsedSize,\
-  case when max_size = '-1' then '1' else '0' end as Unlimited \
+  cast(case when max_size = '-1' then '1' else '0' end as nvarchar) as Unlimited \
  FROM sys.database_files WHERE type_desc = 'LOG'";
 
+    /// NOTE: cast( ... as nvarchar) is a workaround gainst unsupported collations
     pub const DATAFILES: &str = "SELECT name, physical_name,\
   cast(max_size/128 as bigint) as MaxSize,\
   cast(size/128 as bigint) as AllocatedSize,\
   cast(FILEPROPERTY (name, 'spaceused')/128 as bigint) as UsedSize,\
-  case when max_size = '-1' then '1' else '0' end as Unlimited \
+    cast(case when max_size = '-1' then '1' else '0' end  as nvarchar) as Unlimited  \
 FROM sys.database_files WHERE type_desc = 'ROWS'";
 
     pub const DATABASES: &str = "SELECT name, \
@@ -203,7 +239,7 @@ cast(DATABASEPROPERTYEX(name, 'Status') as varchar) AS Status, \
 FROM master.dbo.sysdatabases";
 
     pub const IS_CLUSTERED: &str =
-        "SELECT cast( SERVERPROPERTY('IsClustered') as varchar) AS is_clustered";
+        "SELECT cast( SERVERPROPERTY('IsClustered') as nvarchar) AS is_clustered";
     pub const CLUSTER_NODES: &str = "SELECT nodename FROM sys.dm_os_cluster_nodes";
     pub const CLUSTER_ACTIVE_NODES: &str =
         "SELECT cast(SERVERPROPERTY('ComputerNamePhysicalNetBIOS') as varchar) AS active_node";

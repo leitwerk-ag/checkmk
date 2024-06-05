@@ -7,12 +7,19 @@ from collections.abc import Mapping
 from typing import Any
 
 from cmk.agent_based.v1 import check_levels
-from cmk.agent_based.v2 import CheckPlugin, Metric, render, Result, Service, State
-from cmk.agent_based.v2.type_defs import CheckResult, DiscoveryResult
+from cmk.agent_based.v2 import (
+    CheckPlugin,
+    CheckResult,
+    DiscoveryResult,
+    Metric,
+    render,
+    Result,
+    Service,
+    State,
+)
 from cmk.plugins.netapp import models
 
 VolumesSection = Mapping[str, models.VolumeModel]
-VolumesCountersSection = Mapping[str, models.VolumeCountersModel]
 
 
 # <<<netapp_ontap_volumes:sep(0)>>>
@@ -79,7 +86,7 @@ def check_netapp_ontap_snapshots(
         )
         yield Metric("bytes", volume.snapshot_used)
         yield Result(
-            state=params.get("state_noreserve", State.WARN),
+            state=State(params.get("state_noreserve", State.WARN)),
             summary="No snapshot reserve configured",
         )
         return

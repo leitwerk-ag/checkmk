@@ -23,7 +23,7 @@ DiscoveryVsSetting = dict[
     ],
     bool,
 ]
-DiscoveryVsSettings = tuple[Literal["update_everything", "custom"], DiscoveryVsSetting]
+DiscoveryVsSettings = tuple[Literal["update_everything", "custom"], DiscoveryVsSetting | None]
 
 
 @dataclass(frozen=True)
@@ -65,6 +65,8 @@ class DiscoverySettings:
                 update_changed_service_parameters=False,
             )
 
+        # "custom" mode
+        assert mode[1] is not None
         return cls(
             update_host_labels=mode[1].get("update_host_labels", False),
             add_new_services=mode[1].get("add_new_services", False),
@@ -112,11 +114,9 @@ class _Discoverable(Protocol):
     comparing equal.
     """
 
-    def id(self) -> Hashable:
-        ...
+    def id(self) -> Hashable: ...
 
-    def comparator(self) -> object:
-        ...
+    def comparator(self) -> object: ...
 
 
 _DiscoveredItem = TypeVar("_DiscoveredItem", bound=_Discoverable)

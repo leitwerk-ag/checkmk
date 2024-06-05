@@ -3,17 +3,20 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+import datetime
 import logging
 from collections.abc import Mapping
-from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
+import time_machine
 
-from tests.testlib import on_time
+from cmk.utils.hostaddress import HostName
 
 from cmk.ec.event import (
     _split_syslog_nonnil_sd_and_message,
     create_event_from_syslog_message,
+    Event,
     parse_iso_8601_timestamp,
     parse_rfc5424_syslog_info,
     parse_syslog_info,
@@ -187,6 +190,24 @@ from cmk.ec.event import (
                 "text": "message....",
                 "time": 1365162571,
             },
+        ),
+        (
+            pytest.param(
+                b"<133>2023-09-29 18:41:55 host 51890 message....",
+                Event(
+                    application="",
+                    core_host=None,
+                    facility=16,
+                    host=HostName("host"),
+                    host_in_downtime=False,
+                    ipaddress="127.0.0.1",
+                    pid=51890,
+                    priority=5,
+                    text="message....",
+                    time=1696005715.0,
+                ),
+                id="Variant 11: TP-Link T1500G-8T 2.0",
+            )
         ),
         (
             # Variant 6: syslog message without date / host:
@@ -384,10 +405,13 @@ from cmk.ec.event import (
         ),
     ],
 )
-def test_create_event_from_syslog_message(data: bytes, expected: Mapping[str, Any]) -> None:
+def test_create_event_from_syslog_message(data: bytes, expected: Mapping[str, object]) -> None:
     address = ("127.0.0.1", 1234)
     logger = logging.getLogger("cmk.mkeventd")
-    with on_time(1550000000.0, "CET"):
+
+    with time_machine.travel(
+        datetime.datetime.fromtimestamp(1550000000, tz=ZoneInfo("CET")), tick=False
+    ):
         assert create_event_from_syslog_message(data, address, logger) == expected
 
 
@@ -412,15 +436,19 @@ def test_create_event_from_syslog_message(data: bytes, expected: Mapping[str, An
     ],
 )
 def test_create_event_from_syslog_message_with_DST(
-    data: bytes, expected: Mapping[str, Any]
+    data: bytes, expected: Mapping[str, object]
 ) -> None:
     address = ("127.0.0.1", 1234)
     logger = logging.getLogger("cmk.mkeventd")
 
-    with on_time(1675748161, "CET"):  # february when there is no DST
+    with time_machine.travel(
+        datetime.datetime.fromtimestamp(1675748161, tz=ZoneInfo("CET"))
+    ):  # february when there is no DST
         assert create_event_from_syslog_message(data, address, logger) == expected
 
-    with on_time(1688704561, "CET"):  # July when there is DST
+    with time_machine.travel(
+        datetime.datetime.fromtimestamp(1688704561, tz=ZoneInfo("CET"))
+    ):  # July when there is DST
         assert create_event_from_syslog_message(data, address, logger) == expected
 
 
@@ -445,15 +473,19 @@ def test_create_event_from_syslog_message_with_DST(
     ],
 )
 def test_create_event_from_syslog_message_without_DST(
-    data: bytes, expected: Mapping[str, Any]
+    data: bytes, expected: Mapping[str, object]
 ) -> None:
     address = ("127.0.0.1", 1234)
     logger = logging.getLogger("cmk.mkeventd")
 
-    with on_time(1675748161, "CET"):  # february when there is no DST
+    with time_machine.travel(
+        datetime.datetime.fromtimestamp(1675748161, tz=ZoneInfo("CET")), tick=False
+    ):  # february when there is no DST
         assert create_event_from_syslog_message(data, address, logger) == expected
 
-    with on_time(1688704561, "CET"):  # July when there is DST
+    with time_machine.travel(
+        datetime.datetime.fromtimestamp(1688704561, tz=ZoneInfo("CET")), tick=False
+    ):  # July when there is DST
         assert create_event_from_syslog_message(data, address, logger) == expected
 
 
@@ -507,7 +539,7 @@ def test_create_event_from_syslog_message_without_DST(
         ),
     ],
 )
-def test_parse_syslog_info(line: str, expected_result: Mapping[str, Any]) -> None:
+def test_parse_syslog_info(line: str, expected_result: Mapping[str, object]) -> None:
     assert parse_syslog_info(line) == expected_result
 
 
@@ -551,9 +583,12 @@ def test_parse_syslog_info(line: str, expected_result: Mapping[str, Any]) -> Non
         ),
     ],
 )
-def test_parse_rfc5424_syslog_info(line: str, expected_result: Mapping[str, Any]) -> None:
+def test_parse_rfc5424_syslog_info(line: str, expected_result: Mapping[str, object]) -> None:
     # this is currently needed because we do not use the timezone information from the log message
-    with on_time(1550000000.0, "UTC"):
+
+    with time_machine.travel(
+        datetime.datetime.fromtimestamp(1550000000, tz=ZoneInfo("UTC")), tick=False
+    ):
         assert parse_rfc5424_syslog_info(line) == expected_result
 
 

@@ -4,15 +4,15 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 import shlex
-from collections.abc import Mapping, Sequence
-from typing import Callable, Iterable, Protocol
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from pathlib import Path
+from typing import Protocol
 
-import cmk.utils.config_warnings as config_warnings
-from cmk.utils import password_store
+from cmk.utils import config_warnings, password_store
 from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.servicename import ServiceName
 
-from cmk.server_side_calls.v1 import PlainTextSecret, Secret, StoredSecret
+from cmk.server_side_calls.v1 import Secret
 
 CheckCommandArguments = Iterable[int | float | str | tuple[str, str, str]]
 
@@ -27,9 +27,7 @@ SpecialAgentInfoFunctionResult = (  # or check.
     str | Sequence[str | int | float | tuple[str, str, str]] | SpecialAgentLegacyConfiguration
 )
 
-InfoFunc = Callable[
-    [Mapping[str, object], HostName, HostAddress | None], SpecialAgentInfoFunctionResult
-]
+InfoFunc = Callable[[object, HostName, HostAddress | None], SpecialAgentInfoFunctionResult]
 
 
 class ActiveCheckError(Exception):  # or agent
@@ -40,7 +38,8 @@ def commandline_arguments(
     hostname: HostName,
     description: ServiceName | None,
     commandline_args: SpecialAgentInfoFunctionResult,
-    passwords_from_store: Mapping[str, str] | None = None,
+    passwords: Mapping[str, str],
+    password_store_file: Path,
 ) -> str:
     """Commandline arguments for special agents or active checks."""
 
@@ -56,19 +55,15 @@ def commandline_arguments(
             "string of the concatenated arguments (Service: %s)." % (description)
         )
 
-    return _prepare_check_command(
-        args,
-        hostname,
-        description,
-        password_store.load() if passwords_from_store is None else passwords_from_store,
-    )
+    return _prepare_check_command(args, hostname, description, passwords, password_store_file)
 
 
 def _prepare_check_command(
     command_spec: CheckCommandArguments,
     hostname: HostName,
     description: ServiceName | None,
-    passwords_from_store: Mapping[str, str],
+    passwords: Mapping[str, str],
+    password_store_file: Path,
 ) -> str:
     """Prepares a check command for execution by Checkmk
 
@@ -76,8 +71,7 @@ def _prepare_check_command(
     for the command line. These entries will be completed by the executed program later to get the
     password from the password store.
     """
-    passwords: list[tuple[str, str, str]] = []
-    formatted: list[str] = []
+    formatted: list[str | tuple[str, str, str]] = []
     for arg in command_spec:
         if isinstance(arg, (int, float)):
             formatted.append(str(arg))
@@ -86,71 +80,92 @@ def _prepare_check_command(
             formatted.append(shlex.quote(arg))
 
         elif isinstance(arg, tuple) and len(arg) == 3:
-            pw_ident, preformated_arg = arg[1:]
-            try:
-                password = passwords_from_store[pw_ident]
-            except KeyError:
-                if hostname and description:
-                    descr = f' used by service "{description}" on host "{hostname}"'
-                elif hostname:
-                    descr = f' used by host host "{hostname}"'
-                else:
-                    descr = ""
-
-                config_warnings.warn(
-                    f'The stored password "{pw_ident}"{descr} does not exist (anymore).'
-                )
-                password = "%%%"
-
-            pw_start_index = str(preformated_arg.index("%s"))
-            formatted.append(shlex.quote(preformated_arg % ("*" * len(password))))
-            passwords.append((str(len(formatted)), pw_start_index, pw_ident))
+            formatted.append(arg)
 
         else:
             raise ActiveCheckError(f"Invalid argument for command line: {arg!r}")
 
-    if passwords:
-        pw = ",".join(["@".join(p) for p in passwords])
-        pw_store_arg = f"--pwstore={pw}"
-        formatted = [shlex.quote(pw_store_arg)] + formatted
-
-    return " ".join(formatted)
+    return " ".join(
+        password_store.hack.apply_password_hack(
+            formatted,
+            passwords,
+            password_store_file,
+            config_warnings.warn,
+            _make_log_label(hostname, description),
+        ),
+    )
 
 
 def replace_passwords(
     host_name: str,
-    stored_passwords: Mapping[str, str],
     arguments: Sequence[str | Secret],
+    passwords: Mapping[str, str],
+    password_store_file: Path,
+    surrogated_secrets: Mapping[int, str],
+    *,
+    apply_password_store_hack: bool,
 ) -> str:
-    passwords: list[tuple[str, str, str]] = []
-    formatted: list[str] = []
+    formatted: list[str | tuple[str, str, str]] = []
 
-    for arg in arguments:
-        if isinstance(arg, PlainTextSecret):
-            formatted.append(shlex.quote(arg.format % arg.value))
+    for index, arg in enumerate(arguments):
+        if isinstance(arg, str):
+            formatted.append(shlex.quote(arg))
+            continue
 
-        elif isinstance(arg, StoredSecret):
-            try:
-                password = stored_passwords[arg.value]
-            except KeyError:
-                config_warnings.warn(
-                    f'The stored password "{arg.value}" used by host "{host_name}"'
-                    " does not exist."
-                )
-                password = "%%%"
+        if not isinstance(arg, Secret):
+            # this can only happen if plugin developers are ignoring the API's typing.
+            raise _make_helpful_exception(index, arguments)
 
-            pw_start_index = str(arg.format.index("%s"))
-            formatted.append(shlex.quote(arg.format % ("*" * len(password))))
-            passwords.append((str(len(formatted)), pw_start_index, arg.value))
-        else:
-            formatted.append(shlex.quote(str(arg)))
+        secret = arg
+        secret_name = surrogated_secrets[secret.id]
 
-    if passwords:
-        pw = ",".join(["@".join(p) for p in passwords])
-        pw_store_arg = f"--pwstore={pw}"
-        formatted = [shlex.quote(pw_store_arg)] + formatted
+        if secret.pass_safely:
+            formatted.append(shlex.quote(f"{secret_name}:{password_store_file}"))
+            continue
 
-    return " ".join(formatted)
+        # we are meant to pass it as plain secret here, but we
+        # maintain a list of plugins that have a very special hack in place.
+
+        if apply_password_store_hack:
+            # fall back to old hack, for now
+            formatted.append(("store", secret_name, arg.format))
+            continue
+
+        # TODO: I think we can check this much earlier now.
+        try:
+            secret_value = passwords[secret_name]
+        except KeyError:
+            config_warnings.warn(
+                f'The stored password "{secret_name}" used by host "{host_name}"' " does not exist."
+            )
+            secret_value = "%%%"
+        formatted.append(shlex.quote(secret.format % secret_value))
+
+    return " ".join(
+        password_store.hack.apply_password_hack(
+            formatted,
+            passwords,
+            password_store_file,
+            config_warnings.warn,
+            _make_log_label(host_name),
+        ),
+    )
+
+
+def _make_log_label(host_name: str | None, description: ServiceName | None = None) -> str:
+    if host_name and description:
+        return f' used by service "{description}" on host "{host_name}"'
+    if host_name:
+        return f' used by host "{host_name}"'
+    return ""
+
+
+def _make_helpful_exception(index: int, arguments: Sequence[str | Secret]) -> TypeError:
+    """Create a developer-friendly exception for invalid arguments"""
+    raise TypeError(
+        f"Got invalid argument list from SSC plugin: {arguments[index]!r} at index {index} in {arguments!r}. "
+        "Expected either `str` or `Secret`."
+    )
 
 
 def replace_macros(string: str, macros: Mapping[str, str]) -> str:

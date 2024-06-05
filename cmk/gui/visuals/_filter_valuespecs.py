@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# pylint: disable=protected-access
+
 import json
 import sys
 import traceback
@@ -216,6 +218,15 @@ def filters_allowed_for_info(info: str) -> Iterator[tuple[str, Filter]]:
 def filters_allowed_for_infos(info_list: SingleInfos) -> dict[str, Filter]:
     """Same as filters_allowed_for_info() but for multiple infos"""
     return dict(chain.from_iterable(map(filters_allowed_for_info, info_list)))
+
+
+def filters_exist_for_infos(infos: SingleInfos) -> bool:
+    """Returns True if any filter is registered for the given infos"""
+    for _fname, filt in filter_registry.items():
+        for info in infos:
+            if filt.info is None or info == filt.info:
+                return True
+    return False
 
 
 class VisualFilterListWithAddPopup(VisualFilterList):

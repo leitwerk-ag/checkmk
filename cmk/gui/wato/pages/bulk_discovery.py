@@ -13,8 +13,7 @@ from cmk.utils.hostaddress import HostName
 
 from cmk.checkengine.discovery import DiscoverySettings
 
-import cmk.gui.forms as forms
-import cmk.gui.sites as sites
+from cmk.gui import forms, sites
 from cmk.gui.breadcrumb import Breadcrumb
 from cmk.gui.config import active_config
 from cmk.gui.exceptions import HTTPRedirect, MKUserError
@@ -69,7 +68,9 @@ class ModeBulkDiscovery(WatoMode):
         self._just_started = False
         self._get_bulk_discovery_params()
         self._job = BulkDiscoveryBackgroundJob()
-        self._folder = disk_or_search_folder_from_request()
+        self._folder = disk_or_search_folder_from_request(
+            request.var("folder"), request.get_ascii_input("host")
+        )
 
     def _get_bulk_discovery_params(self) -> None:
         self._bulk_discovery_params = copy.deepcopy(active_config.bulk_discovery_default_settings)

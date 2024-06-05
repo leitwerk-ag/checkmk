@@ -10,6 +10,8 @@ from typing import Any, DefaultDict, TypedDict
 
 from cmk.agent_based.v1 import check_levels, check_levels_predictive
 from cmk.agent_based.v2 import (
+    CheckResult,
+    DiscoveryResult,
     get_average,
     get_rate,
     IgnoreResultsError,
@@ -18,7 +20,6 @@ from cmk.agent_based.v2 import (
     Result,
     Service,
     State,
-    type_defs,
 )
 
 Disk = Mapping[str, float]
@@ -30,7 +31,7 @@ DISKSTAT_DISKLESS_PATTERN = re.compile("x?[shv]d[a-z]*[0-9]+")
 def discovery_diskstat_generic(
     params: Sequence[Mapping[str, Any]],
     section: Iterable[str],
-) -> type_defs.DiscoveryResult:
+) -> DiscoveryResult:
     item_candidates = list(section)
     # Skip over on empty data
     if not item_candidates:
@@ -305,7 +306,7 @@ def _get_averaged_disk(
         key: get_average(
             value_store=value_store,
             # We add 'check_diskstat_dict' to the key to avoid possible overlap with keys
-            # used in check plugins. For example, for the SUMMARY-item, the check plugin
+            # used in check plug-ins. For example, for the SUMMARY-item, the check plug-in
             # winperf_phydisk first computes all rates for all items using 'metric.item' as
             # key and then summarizes the disks. Hence, for a disk called 'avg', these keys
             # would be the same as the keys used here.
@@ -390,7 +391,7 @@ def check_diskstat_dict(
     disk: Disk,
     value_store: MutableMapping,
     this_time: float,
-) -> type_defs.CheckResult:
+) -> CheckResult:
     if not disk:
         return
 
@@ -432,11 +433,12 @@ def check_diskstat_dict(
         yield from check_levels(
             latency,
             levels_upper=levels,
+            metric_name="disk_latency",
             render_func=render.timespan,
             label="Latency",
         )
 
-    # All the other metrics are currently not output in the plugin output - simply because
+    # All the other metrics are currently not output in the plug-in output - simply because
     # of their amount. They are present as performance data and will shown in graphs.
 
     # Send everything as performance data now. Sort keys alphabetically

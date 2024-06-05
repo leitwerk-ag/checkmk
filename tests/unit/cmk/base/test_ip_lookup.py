@@ -18,8 +18,7 @@ from cmk.utils.exceptions import MKIPAddressLookupError
 from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.tags import TagGroupID, TagID
 
-import cmk.base.config as config
-import cmk.base.ip_lookup as ip_lookup
+from cmk.base import config, ip_lookup
 
 _PersistedCache: TypeAlias = Mapping[
     tuple[HostName | HostAddress, socket.AddressFamily], HostAddress | None
@@ -248,13 +247,6 @@ def test_filecache_beats_failing_lookup(monkeypatch: MonkeyPatch) -> None:
         force_file_cache_renewal=True,
     ) == HostAddress("3.1.4.1")
     assert persisted_cache[(HostName("test_host"), socket.AF_INET)]
-
-
-# TODO: Can be removed when this is not executed through a symlink anymore.
-# tests/unit/cmk/base/conftest.py::clear_config_caches() then cares about this.
-@pytest.fixture(autouse=True, scope="function")
-def clear_config_caches_ip_lookup(monkeypatch: MonkeyPatch) -> None:
-    cache_manager.clear()
 
 
 class TestIPLookupCacheSerialzer:

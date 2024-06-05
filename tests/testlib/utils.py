@@ -130,13 +130,6 @@ def is_containerized() -> bool:
     )
 
 
-def virtualenv_path() -> Path:
-    venv = subprocess.check_output(
-        [repo_path() / "scripts/run-pipenv", "--bare", "--venv"], encoding="utf-8"
-    )
-    return Path(venv.rstrip("\n"))
-
-
 def find_git_rm_mv_files(dirpath: Path) -> list[str]:
     del_files = []
 
@@ -192,8 +185,8 @@ def current_base_branch_name() -> str:
         ["git", "rev-list", "--max-count=30", branch_name], encoding="utf-8"
     )
     for commit in commits.strip().split("\n"):
-        # Asking for remote heads here, since the git repos checked out by jenkins do not create all
-        # the branches locally
+        # Asking for remote heads here, since the git repos checked out in CI
+        # do not create all branches locally
 
         # --format=%(refname): Is not supported by all distros :(
         #
@@ -227,18 +220,16 @@ def current_base_branch_name() -> str:
     return branch_name
 
 
-def get_cmk_download_credentials_file() -> str:
-    return "%s/.cmk-credentials" % os.environ["HOME"]
-
-
 def get_cmk_download_credentials() -> tuple[str, str]:
-    credentials_file_path = get_cmk_download_credentials_file()
+    credentials_file_path = Path("~").expanduser() / ".cmk-credentials"
     try:
         with open(credentials_file_path) as credentials_file:
             username, password = credentials_file.read().strip().split(":", maxsplit=1)
             return username, password
     except OSError:
-        raise Exception("Missing %s file (Create with content: USER:PASSWORD)" % credentials_file)
+        raise RuntimeError(
+            f"Missing file: {credentials_file_path} (Create with content: USER:PASSWORD)"
+        )
 
 
 def get_standard_linux_agent_output() -> str:
@@ -283,7 +274,7 @@ def version_spec_from_env(fallback: str | None = None) -> str:
     raise RuntimeError("VERSION environment variable, e.g. 2016.12.22, is missing")
 
 
-def _parse_raw_edition(raw_edition: str) -> Edition:
+def parse_raw_edition(raw_edition: str) -> Edition:
     try:
         return Edition[raw_edition.upper()]
     except KeyError:
@@ -295,7 +286,7 @@ def _parse_raw_edition(raw_edition: str) -> Edition:
 
 def edition_from_env(fallback: Edition | None = None) -> Edition:
     if raw_editon := os.environ.get("EDITION"):
-        return _parse_raw_edition(raw_editon)
+        return parse_raw_edition(raw_editon)
     if fallback:
         return fallback
     raise RuntimeError("EDITION environment variable, e.g. cre or enterprise, is missing")
@@ -315,10 +306,13 @@ def spawn_expect_process(
     logfile_path: str = "/tmp/sep.out",
     auto_wrap_length: int = 49,
     break_long_words: bool = False,
+    timeout: int = 30,
 ) -> int:
     """Spawn an interactive CLI process via pexpect and process supplied expected dialogs
     "dialogs" must be a list of objects with the following format:
     {"expect": str, "send": str, "count": int, "optional": bool}
+
+    By default, 'timeout' has a value of 30 seconds.
 
     Return codes:
     0: success
@@ -348,15 +342,18 @@ def spawn_expect_process(
                             dialog.expect,  # rc=0
                             pexpect.EOF,  # rc=1
                             pexpect.TIMEOUT,  # rc=2
-                        ]
+                        ],
+                        timeout=timeout,
                     )
                     if rc == 0:
                         # msg found; sending input
                         LOGGER.info(
                             "%s; sending: %s",
-                            "Optional message found"
-                            if dialog.optional
-                            else "Required message found",
+                            (
+                                "Optional message found"
+                                if dialog.optional
+                                else "Required message found"
+                            ),
                             repr(dialog.send),
                         )
                         p.send(dialog.send)
@@ -375,7 +372,7 @@ def spawn_expect_process(
                         # max count reached
                         break
             if p.isalive():
-                rc = p.expect(pexpect.EOF)
+                rc = p.expect(pexpect.EOF, timeout=timeout)
             else:
                 rc = p.status
         except Exception as e:
@@ -473,12 +470,14 @@ def write_file(
         substitute_user=substitute_user,
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
-        encoding=None
-        if isinstance(
-            content,
-            bytes,
-        )
-        else "utf-8",
+        encoding=(
+            None
+            if isinstance(
+                content,
+                bytes,
+            )
+            else "utf-8"
+        ),
     ) as p:
         p.communicate(content)
     if p.returncode != 0:
@@ -498,12 +497,19 @@ def makedirs(path: str, sudo: bool = True, substitute_user: str | None = None) -
 
 
 def restart_httpd() -> None:
-    """On RHEL-based distros, such as CentOS and AlmaLinux, we have to manually restart httpd after
-    creating a new site. Otherwise, the site's REST API won't be reachable via port 80, preventing
-    e.g. the controller from querying the agent receiver port.
+    """Restart Apache manually on RHEL-based containers.
 
-    Note: the mere presence of httpd is not enough to determine whether we have to restart or not,
-    see e.g. sles-15sp4.
+    On RHEL-based containers, such as CentOS and AlmaLinux, the system Apache is not running.
+    OMD will not start Apache, if it is not running already.
+
+    If a distro uses an `INIT_CMD`, which is not available inside of docker, then the system
+    Apache won't be restarted either. For example, sles uses `systemctl restart apache2.service`.
+    However, the docker container does not use systemd as in init process. Thus, this fails in the
+    test environment, but not a real distribution.
+
+    Before using this in your test, try an Apache reload instead. It is much more likely to work
+    accross different distributions. If your test needs a system Apache, then run this command at
+    the beginning of the test. This ensures consistency accross distributions.
     """
 
     # When executed locally and un-dockerized, DISTRO may not be set
@@ -521,84 +527,100 @@ def get_services_with_status(
     host_data: dict[str, ServiceInfo],
     service_status: int,
     skipped_services: list[str] | tuple[str, ...] = (),
-) -> set:
+) -> set[str]:
     """Return a set of services in the given status which are not in the 'skipped' list."""
-    services_list = set()
-    for service in host_data:
-        if host_data[service].state == service_status and service not in skipped_services:
-            services_list.add(service)
-
-    LOGGER.debug(
-        "%s service(s) found in state %s:\n%s",
-        len(services_list),
-        service_status,
-        pformat(services_list),
-    )
+    services_by_state: dict[int, dict[str, ServiceInfo]] = {}
+    for state in sorted({_.state for _ in host_data.values()}):
+        services_by_state[state] = {
+            service_name: service_info
+            for service_name, service_info in host_data.items()
+            if host_data[service_name].state == state
+        }
+    for state, services in services_by_state.items():
+        LOGGER.debug(
+            "%s service(s) found in state %s (%s):\n%s",
+            len(services),
+            state,
+            {0: "OK", 1: "WARN", 2: "CRIT", 3: "UNKNOWN"}.get(state, "UNDEFINED"),
+            pformat(services),
+        )
+    services_list = set(_ for _ in services_by_state[service_status] if _ not in skipped_services)
     return services_list
 
 
 @contextmanager
+def _cse_config(config: Path, content: bytes | str) -> Iterator[None]:
+    write_config = not os.path.exists(config)
+    if write_config:
+        write_file(config.as_posix(), content, sudo=True)
+    else:
+        LOGGER.warning('Skipped writing "%s": File exists!', config)
+    assert config.exists()
+    yield
+    if write_config:
+        execute(["rm", config.as_posix()])
+
+
+@contextmanager
 def cse_openid_oauth_provider(site_url: str) -> Iterator[subprocess.Popen]:
+    from cmk.gui.cse.userdb.cognito import oauth2
+
     idp_url = "http://localhost:5551"
     makedirs("/etc/cse", sudo=True)
     assert os.path.exists("/etc/cse")
 
-    cognito_config = "/etc/cse/cognito-cmk.json"
-    write_cognito_config = not os.path.exists(cognito_config)
-    global_config = "/etc/cse/global-config.json"
-    write_global_config = not os.path.exists(global_config)
-    if write_cognito_config:
-        write_file(
-            cognito_config,
-            check_output(
-                [f"{repo_path()}/scripts/create_cognito_config_cse.sh", idp_url, site_url]
-            ),
-            sudo=True,
-        )
-    else:
-        LOGGER.warning('Skipped writing "%s": File exists!', cognito_config)
-    assert os.path.exists(cognito_config)
-
-    if write_global_config:
-        with open(f"{repo_path()}/tests/etc/cse/global-config.json") as f:
-            write_file(
-                global_config,
-                f.read(),
-                sudo=True,
-            )
-    else:
-        LOGGER.warning('Skipped writing "%s": File exists!', global_config)
-    assert os.path.exists(global_config)
-
-    idp = urlparse(idp_url)
-    auth_provider_proc = execute(
-        [
-            f"{repo_path()}/scripts/run-pipenv",
-            "run",
-            "uvicorn",
-            "tests.testlib.cse.openid_oauth_provider:application",
-            "--host",
-            f"{idp.hostname}",
-            "--port",
-            f"{idp.port}",
-        ],
-        sudo=False,
-        cwd=repo_path(),
-        env=dict(os.environ, URL=idp_url),
-        shell=False,
+    cognito_config = Path("/etc/cse/cognito-cmk.json")
+    cognito_content = check_output(
+        [f"{repo_path()}/scripts/create_cognito_config_cse.sh", idp_url, site_url]
     )
-    assert (
-        auth_provider_proc.poll() is None
-    ), f"Error while starting auth provider! (RC: {auth_provider_proc.returncode})"
-    try:
-        yield auth_provider_proc
-    finally:
-        if auth_provider_proc:
-            auth_provider_proc.kill()
-        if write_cognito_config:
-            execute(["rm", cognito_config])
-        if write_global_config:
-            execute(["rm", global_config])
+
+    global_config = Path("/etc/cse/global-config.json")
+    with open(f"{repo_path()}/tests/etc/cse/global-config.json") as f:
+        global_content = f.read()
+
+    uap_config = Path("/etc/cse/admin_panel_url.json")
+    uap_content = oauth2.AdminPanelUrl(uap_url="https://some.test.url/uap").model_dump_json()
+
+    with (
+        _cse_config(cognito_config, cognito_content),
+        _cse_config(global_config, global_content),
+        _cse_config(uap_config, uap_content),
+    ):
+        idp = urlparse(idp_url)
+        auth_provider_proc = execute(
+            [
+                f"{repo_path()}/scripts/run-pipenv",
+                "run",
+                "uvicorn",
+                "tests.testlib.cse.openid_oauth_provider:application",
+                "--host",
+                f"{idp.hostname}",
+                "--port",
+                f"{idp.port}",
+            ],
+            sudo=False,
+            cwd=repo_path(),
+            env=dict(os.environ, URL=idp_url),
+            shell=False,
+        )
+        assert (
+            auth_provider_proc.poll() is None
+        ), f"Error while starting auth provider! (RC: {auth_provider_proc.returncode})"
+        try:
+            yield auth_provider_proc
+        finally:
+            if auth_provider_proc:
+                auth_provider_proc.kill()
+
+
+def cse_create_onboarding_dummies(root: str) -> None:
+    onboarding_dir = os.path.join(root, "share/check_mk/web/htdocs/onboarding")
+    if os.path.exists(onboarding_dir):
+        return
+    LOGGER.warning("SaaS edition onboarding files not found; creating dummy files...")
+    makedirs(onboarding_dir)
+    write_file(f"{onboarding_dir}/search.css", "/* cse dummy file */")
+    write_file(f"{onboarding_dir}/search.js", "/* cse dummy file */")
 
 
 def wait_until(condition: Callable[[], bool], timeout: float = 1, interval: float = 0.1) -> None:
@@ -608,4 +630,4 @@ def wait_until(condition: Callable[[], bool], timeout: float = 1, interval: floa
             return  # Success. Stop waiting...
         time.sleep(interval)
 
-    raise Exception("Timeout waiting for %r to finish (Timeout: %d sec)" % (condition, timeout))
+    raise TimeoutError("Timeout waiting for %r to finish (Timeout: %d sec)" % (condition, timeout))

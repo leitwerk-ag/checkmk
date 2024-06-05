@@ -5,19 +5,21 @@
 
 
 import json
-from collections.abc import Mapping
-from typing import Callable
+from collections.abc import Callable, Mapping, MutableMapping
+from typing import Any
 
 from cmk.agent_based.v1 import check_levels
 from cmk.agent_based.v2 import (  # check_levels,
     AgentSection,
     CheckPlugin,
+    CheckResult,
+    DiscoveryResult,
     get_value_store,
     Result,
     Service,
     State,
+    StringTable,
 )
-from cmk.agent_based.v2.type_defs import CheckResult, DiscoveryResult, StringTable
 from cmk.plugins.lib.temperature import check_temperature, TempParamDict
 from cmk.plugins.netapp import models
 
@@ -73,8 +75,11 @@ def check_netapp_ontap_environment_discrete(
     )
 
 
-def check_netapp_ontap_environment_threshold(
-    item: str, params: TempParamDict, section: ThresholdSection
+def check_environment_threshold(
+    item: str,
+    params: TempParamDict,
+    section: ThresholdSection,
+    value_store: MutableMapping[str, Any],
 ) -> CheckResult:
     def _perf_key(_key):
         return _key.replace("/", "").replace(" ", "_").replace("__", "_").lower()
@@ -106,22 +111,25 @@ def check_netapp_ontap_environment_threshold(
             dev_unit=_scale_unit(data.value_units),
             dev_levels=levels[:2],
             dev_levels_lower=levels[2:],
-            value_store=get_value_store(),
+            value_store=value_store,
         )
         return
 
-    def _fan_render(v):
-        return f"{int(v)}" if data.sensor_type == "fan" else f"{v}"
+    unit = _scale_unit(data.value_units)
 
     yield from check_levels(
         value=_scale(data.value, data.value_units),
         levels_upper=levels[:2],
         levels_lower=levels[2:],
         metric_name=data.sensor_type,
-        # we don't want to see decimal rpms
-        # we want to see the voltage and current in more detail
-        render_func=_fan_render,
+        render_func=lambda v: f"{v} {unit}",
     )
+
+
+def check_netapp_ontap_environment_threshold(
+    item: str, params: TempParamDict, section: ThresholdSection
+) -> CheckResult:
+    yield from check_environment_threshold(item, params, section, get_value_store())
 
 
 check_plugin_netapp_ontap_environment = CheckPlugin(

@@ -3,10 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-from cmk.rulesets.v1 import Localizable
-from cmk.rulesets.v1.form_specs import Migrate
-from cmk.rulesets.v1.form_specs.basic import ServiceState
-from cmk.rulesets.v1.form_specs.composed import DictElement, Dictionary
+from cmk.rulesets.v1 import Title
+from cmk.rulesets.v1.form_specs import DefaultValue, DictElement, Dictionary, ServiceState
 from cmk.rulesets.v1.rule_specs import CheckParameters, HostCondition, Topic
 
 
@@ -15,34 +13,32 @@ def _parameter_form_zypper() -> Dictionary:
         elements={
             "security": DictElement(
                 parameter_form=ServiceState(
-                    title=Localizable("State when security updates are pending"),
-                    prefill_value=ServiceState.CRIT,
+                    title=Title("State when security updates are pending"),
+                    prefill=DefaultValue(ServiceState.CRIT),
                 ),
             ),
             "recommended": DictElement(
                 parameter_form=ServiceState(
-                    title=Localizable("State when recommended updates are pending"),
-                    prefill_value=ServiceState.WARN,
+                    title=Title("State when recommended updates are pending"),
+                    prefill=DefaultValue(ServiceState.WARN),
                 ),
             ),
             "other": DictElement(
                 parameter_form=ServiceState(
-                    title=Localizable(
+                    title=Title(
                         "State when updates are pending, which are neither recommended or a "
                         "security update"
                     ),
-                    prefill_value=ServiceState.OK,
+                    prefill=DefaultValue(ServiceState.OK),
                 ),
             ),
             "locks": DictElement(
                 parameter_form=ServiceState(
-                    title=Localizable("State when packages are locked"),
-                    prefill_value=ServiceState.WARN,
+                    title=Title("State when packages are locked"),
+                    prefill=DefaultValue(ServiceState.WARN),
                 ),
             ),
         },
-        # TODO remove before 2.3 release, showcases migration
-        transform=Migrate(model_to_form=lambda v: v if isinstance(v, dict) and v else {}),
     )
 
 
@@ -50,6 +46,6 @@ rule_spec_zypper = CheckParameters(
     name="zypper",
     topic=Topic.OPERATING_SYSTEM,
     parameter_form=_parameter_form_zypper,
-    title=Localizable("Zypper Updates"),
+    title=Title("Zypper Updates"),
     condition=HostCondition(),
 )

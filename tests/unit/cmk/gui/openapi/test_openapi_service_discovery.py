@@ -3,12 +3,13 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-import json
 from collections import defaultdict
 from unittest.mock import call, MagicMock
 
 import pytest
 from pytest_mock import MockerFixture
+
+from tests.testlib.rest_api_client import ClientRegistry
 
 from tests.unit.cmk.gui.conftest import WebTestAppForCMK
 
@@ -34,7 +35,7 @@ mock_discovery_result = ServiceDiscoveryPreviewResult(
             None,
             {},
             {},
-            (5.0, 10.0),
+            {"levels": (5.0, 10.0)},
             "CPU load",
             0,
             "15 min load: 1.32 at 8 Cores (0.17 per Core)",
@@ -908,6 +909,7 @@ mock_discovery_result = ServiceDiscoveryPreviewResult(
             [HostName("heute")],
         ),
     ],
+    nodes_check_table={},
     host_labels={"cmk/check_mk_server": {"plugin_name": "labels", "value": "yes"}},
     output="+ FETCHING DATA\n [agent] Using data from cache file /omd/sites/heute/tmp/check_mk/cache/heute\n [agent] Use cached data\n [piggyback] Execute data source\nNo piggyback files for 'heute'. Skip processing.\nNo piggyback files for '127.0.0.1'. Skip processing.\n+ EXECUTING DISCOVERY PLUGINS (29)\nkernel does not support discovery. Skipping it.\n+ EXECUTING HOST LABEL DISCOVERY\n",
     new_labels={},
@@ -1046,7 +1048,7 @@ def test_openapi_discovery_disable_and_re_enable_one_service(
     mocker.patch(
         # one would like to mock the call in the library and not the import. WHY????
         "cmk.gui.watolib.rulesets.get_services_labels",
-        return_value=GetServicesLabelsResult(labels=defaultdict(lambda: {})),
+        return_value=GetServicesLabelsResult(labels=defaultdict(dict)),
     )
     aut_user_auth_wsgi_app.call_method(
         "post",
@@ -1271,44 +1273,24 @@ def test_openapi_discover_single_service(
     mock_set_autochecks.assert_not_called()
 
 
-def test_openapi_bulk_discovery_with_default_options(
-    base: str,
-    aut_user_auth_wsgi_app: WebTestAppForCMK,
-) -> None:
+def test_openapi_bulk_discovery_with_default_options(base: str, clients: ClientRegistry) -> None:
     # create some sample hosts
-    aut_user_auth_wsgi_app.call_method(
-        "post",
-        f"{base}/domain-types/host_config/actions/bulk-create/invoke",
-        params=json.dumps(
+    clients.HostConfig.bulk_create(
+        entries=[
             {
-                "entries": [
-                    {
-                        "host_name": "foobar",
-                        "folder": "/",
-                    },
-                    {
-                        "host_name": "sample",
-                        "folder": "/",
-                    },
-                ]
-            }
-        ),
-        status=200,
-        headers={"Accept": "application/json"},
-        content_type="application/json",
+                "host_name": "foobar",
+                "folder": "/",
+            },
+            {
+                "host_name": "sample",
+                "folder": "/",
+            },
+        ]
     )
 
-    resp = aut_user_auth_wsgi_app.call_method(
-        "post",
-        f"{base}/domain-types/discovery_run/actions/bulk-discovery-start/invoke",
-        status=200,
-        params=json.dumps(
-            {
-                "hostnames": ["foobar", "sample"],
-            }
-        ),
-        headers={"Accept": "application/json"},
-        content_type="application/json",
+    resp = clients.ServiceDiscovery.bulk_discovery(
+        hostnames=["foobar", "sample"],
+        monitor_undecided_services=True,
     )
     assert resp.json["id"] == "bulk_discovery"
     assert resp.json["title"].endswith("is active") or resp.json["title"].endswith(
@@ -1319,12 +1301,7 @@ def test_openapi_bulk_discovery_with_default_options(
     assert "result" in resp.json["extensions"]["logs"]
     assert "progress" in resp.json["extensions"]["logs"]
 
-    status_resp = aut_user_auth_wsgi_app.call_method(
-        "get",
-        base + f"/objects/discovery_run/{resp.json['id']}",
-        status=200,
-        headers={"Accept": "application/json"},
-    )
+    status_resp = clients.ServiceDiscovery.discovery_run_status(resp.json["id"])
     assert status_resp.json["id"] == resp.json["id"]
     assert "active" in status_resp.json["extensions"]
 
@@ -1333,16 +1310,10 @@ def test_openapi_bulk_discovery_with_default_options(
 
 def test_openapi_bulk_discovery_with_invalid_hostname(
     base: str,
-    aut_user_auth_wsgi_app: WebTestAppForCMK,
+    clients: ClientRegistry,
 ) -> None:
-    aut_user_auth_wsgi_app.call_method(
-        "post",
-        f"{base}/domain-types/discovery_run/actions/bulk-discovery-start/invoke",
-        status=400,
-        params=json.dumps({"hostnames": ["wrong_hostname"]}),
-        headers={"Accept": "application/json"},
-        content_type="application/json",
-    )
+    resp = clients.ServiceDiscovery.bulk_discovery(hostnames=["wrong_hostname"], expect_ok=False)
+    resp.assert_status_code(400)
 
 
 @pytest.mark.usefixtures("with_host", "inline_background_jobs")

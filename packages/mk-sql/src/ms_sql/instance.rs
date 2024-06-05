@@ -14,15 +14,17 @@ use crate::config::{
 };
 use crate::emit;
 use crate::ms_sql::query::{
-    obtain_computer_name, run_custom_query, run_known_query, Answer, Column,
+    obtain_computer_name, obtain_instance_name, obtain_system_user, run_custom_query,
+    run_known_query, Answer, Column,
 };
 use crate::ms_sql::sqls;
 use crate::setup::Env;
 use crate::types::{
-    ComputerName, ConfigHash, HostName, InstanceAlias, InstanceCluster, InstanceEdition,
-    InstanceId, InstanceName, InstanceVersion, PiggybackHostName, Port,
+    ComputerName, HostName, InstanceAlias, InstanceCluster, InstanceEdition, InstanceId,
+    InstanceName, InstanceVersion, PiggybackHostName, Port,
 };
 use crate::utils;
+use core::fmt;
 
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
@@ -30,8 +32,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use tiberius::Row;
-
-use super::defaults;
 
 pub const SQL_LOGIN_ERROR_TAG: &str = "[SQL LOGIN ERROR]";
 pub const SQL_TCP_ERROR_TAG: &str = "[SQL TCP ERROR]";
@@ -49,7 +49,7 @@ pub struct SqlInstanceBuilder {
     endpoint: Option<Endpoint>,
     computer_name: Option<ComputerName>,
     environment: Option<Env>,
-    hash: Option<ConfigHash>,
+    cache_dir: Option<String>,
     piggyback: Option<PiggybackHostName>,
 }
 
@@ -103,8 +103,8 @@ impl SqlInstanceBuilder {
         self.environment = environment.clone().into();
         self
     }
-    pub fn hash(mut self, hash: &ConfigHash) -> Self {
-        self.hash = Some(hash.clone());
+    pub fn cache_dir(mut self, cache_dir: &str) -> Self {
+        self.cache_dir = Some(cache_dir.to_owned());
         self
     }
     pub fn piggyback(mut self, piggyback: Option<PiggybackHostName>) -> Self {
@@ -161,7 +161,7 @@ impl SqlInstanceBuilder {
             endpoint: self.endpoint.unwrap_or_default(),
             computer_name: self.computer_name,
             environment: self.environment.unwrap_or_default(),
-            hash: self.hash.unwrap_or_default(),
+            cache_dir: self.cache_dir.unwrap_or_default(),
             piggyback: self.piggyback,
             version_table,
         }
@@ -195,7 +195,7 @@ pub struct SqlInstance {
     endpoint: Endpoint,
     computer_name: Option<ComputerName>,
     environment: Env,
-    hash: ConfigHash,
+    cache_dir: String,
     piggyback: Option<PiggybackHostName>,
     version_table: [u32; 3],
 }
@@ -203,6 +203,26 @@ pub struct SqlInstance {
 impl AsRef<SqlInstance> for SqlInstance {
     fn as_ref(&self) -> &SqlInstance {
         self
+    }
+}
+
+impl fmt::Display for SqlInstance {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{} `{}` `{}` [{}:{}]",
+            self.full_name(),
+            self.version,
+            self.edition,
+            self.port
+                .clone()
+                .map(|p| u16::from(p).to_string())
+                .unwrap_or("None".to_string()),
+            self.dynamic_port
+                .clone()
+                .map(|p| u16::from(p).to_string())
+                .unwrap_or("None".to_string())
+        )
     }
 }
 
@@ -225,8 +245,8 @@ impl SqlInstance {
         format!("{}/{}", self.endpoint.hostname(), self.name)
     }
 
-    pub fn hash(&self) -> &ConfigHash {
-        &self.hash
+    pub fn cache_dir(&self) -> &str {
+        &self.cache_dir
     }
 
     pub fn temp_dir(&self) -> Option<&Path> {
@@ -303,9 +323,23 @@ impl SqlInstance {
 
         // if yes - call generate_section with database parameter
         // else - call generate_section without database parameter
-
+        log::trace!("{:?} @ {:?}", self, endpoint);
         let body = match self.create_client(endpoint, None).await {
             Ok(mut client) => {
+                log::info!(
+                    "PROCESSING instance '{:?}' by '{}' sql name: '{}'",
+                    self.full_name(),
+                    obtain_system_user(&mut client)
+                        .await
+                        .ok()
+                        .unwrap_or_default()
+                        .unwrap_or("???".to_string()),
+                    obtain_instance_name(&mut client)
+                        .await
+                        .ok()
+                        .unwrap_or_default()
+                        .unwrap_or(InstanceName::from("???".to_string()))
+                );
                 self._generate_sections(&mut client, endpoint, sections)
                     .await
             }
@@ -313,7 +347,8 @@ impl SqlInstance {
                 log::warn!("Can't access {} instance with err {err}\n", self.id);
                 let instance_section = Section::make_instance_section(); // this is important section always present
                 instance_section.to_plain_header()
-                    + &self.generate_state_entry(false, instance_section.sep())
+                    + &self
+                        .generate_bad_state_entry(instance_section.sep(), format!("{err}").as_str())
             }
         };
         header + &body + &self.generate_footer()
@@ -336,7 +371,7 @@ impl SqlInstance {
         }
     }
 
-    pub async fn _generate_sections(
+    async fn _generate_sections(
         &self,
         client: &mut Client,
         endpoint: &Endpoint,
@@ -359,33 +394,27 @@ impl SqlInstance {
         endpoint: &Endpoint,
         database: Option<String>,
     ) -> Result<Client> {
+        log::info!("create client {}", self.name);
         let (auth, conn) = endpoint.split();
         let client = match auth.auth_type() {
             AuthType::SqlServer | AuthType::Windows => {
                 if let Some(credentials) = client::obtain_config_credentials(auth) {
-                    client::create_remote(
-                        conn.hostname(),
-                        self.port()
-                            .map(|p| p.value())
-                            .unwrap_or(defaults::STANDARD_PORT),
-                        credentials,
-                        database,
-                    )
-                    .await?
+                    client::ClientBuilder::new()
+                        .logon_on_port(&conn.hostname(), self.port(), credentials)
+                        .database(database)
                 } else {
                     anyhow::bail!("Not provided credentials")
                 }
             }
 
             #[cfg(windows)]
-            AuthType::Integrated => {
-                //let s: String = String::from(&self.name);
-                client::create_instance_local(&self.name, conn.sql_browser_port(), database).await?
-            }
+            AuthType::Integrated => client::ClientBuilder::new()
+                .local_by_port(self.port(), Some(conn.hostname()))
+                .database(database),
 
             _ => anyhow::bail!("Not supported authorization type"),
         };
-        Ok(client)
+        client.build().await
     }
 
     pub async fn generate_details_entry(&self, client: &mut Client, sep: char) -> String {
@@ -399,8 +428,12 @@ impl SqlInstance {
         }
     }
 
-    pub fn generate_state_entry(&self, accessible: bool, sep: char) -> String {
-        format!("{}{sep}state{sep}{}\n", self.mssql_name(), accessible as u8)
+    pub fn generate_good_state_entry(&self, sep: char) -> String {
+        format!("{}{sep}state{sep}1{sep}\n", self.mssql_name(),)
+    }
+
+    pub fn generate_bad_state_entry(&self, sep: char, message: &str) -> String {
+        format!("{}{sep}state{sep}0{sep}{}\n", self.mssql_name(), message)
     }
 
     pub async fn generate_section(
@@ -436,7 +469,7 @@ impl SqlInstance {
             let sep = section.sep();
             match section.name() {
                 names::INSTANCE => {
-                    self.generate_state_entry(true, sep)
+                    self.generate_good_state_entry(sep)
                         + &self.generate_details_entry(client, sep).await
                 }
                 names::COUNTERS => self.generate_counters_section(client, &query, sep).await,
@@ -484,7 +517,7 @@ impl SqlInstance {
         }
         if let Some(path) = self
             .environment
-            .obtain_cache_sub_dir(self.hash().to_string().as_str())
+            .obtain_cache_sub_dir(self.cache_dir())
             .map(|d| d.join(self.make_cache_entry_name(name)))
         {
             match utils::get_modified_age(&path) {
@@ -505,10 +538,7 @@ impl SqlInstance {
     }
 
     fn write_data_in_cache(&self, name: &str, body: &str) {
-        if let Some(dir) = self
-            .environment
-            .obtain_cache_sub_dir(self.hash().to_string().as_str())
-        {
+        if let Some(dir) = self.environment.obtain_cache_sub_dir(self.cache_dir()) {
             let file_name = self.make_cache_entry_name(name);
             std::fs::write(dir.join(file_name), body)
                 .unwrap_or_else(|e| log::error!("Error {e} writing cache"));
@@ -1017,12 +1047,13 @@ impl SqlInstance {
         databases: &[String],
         sep: char,
     ) -> (Vec<String>, HashSet<String>) {
-        let mut only_databases: HashSet<String> = databases.iter().cloned().collect();
+        let mut only_databases: HashSet<String> =
+            databases.iter().map(|s| s.to_lowercase()).collect();
         let s: Vec<String> = if !rows.is_empty() {
             rows[0]
                 .iter()
                 .filter_map(|row| {
-                    let backup_database = row.get_value_by_name("database_name");
+                    let backup_database = row.get_value_by_name("database_name").to_lowercase();
                     if only_databases.contains(&backup_database) {
                         only_databases.remove(&backup_database);
                         to_backup_entry(&self.mssql_name(), &backup_database, row, sep)
@@ -1050,7 +1081,7 @@ impl SqlInstance {
     }
 
     pub fn port(&self) -> Option<Port> {
-        self.port.clone().or(self.dynamic_port.clone())
+        self.dynamic_port.clone().or(self.port.clone())
     }
 
     pub fn computer_name(&self) -> &Option<ComputerName> {
@@ -1133,7 +1164,7 @@ fn to_table_spaces_entry(
         }
     };
     let db_size = extract(rows, 0, "database_size");
-    let unallocated = extract(rows, 0, "unallocated space");
+    let unallocated = extract(rows, 0, "unallocated_space");
     let reserved = extract(rows, 1, "reserved");
     let data = extract(rows, 1, "data");
     let index_size = extract(rows, 1, "index_size");
@@ -1178,13 +1209,13 @@ fn to_transaction_logs_entry(
     let max_size = row.get_bigint_by_name("MaxSize");
     let allocated_size = row.get_bigint_by_name("AllocatedSize");
     let used_size = row.get_bigint_by_name("UsedSize");
-    let unlimited = row.get_bigint_by_name("Unlimited");
+    let unlimited = row.get_value_by_name("Unlimited");
     format!(
         "{}{sep}{}{sep}{}{sep}{}{sep}{}{sep}{}{sep}{}{sep}{}\n",
         instance_name,
         database_name.replace(' ', "_"),
-        name,
-        physical_name,
+        name.replace(' ', "_"),
+        physical_name.replace(' ', "_"),
         max_size,
         allocated_size,
         used_size,
@@ -1219,7 +1250,7 @@ fn to_datafiles_entry(
     let max_size = row.get_bigint_by_name("MaxSize");
     let allocated_size = row.get_bigint_by_name("AllocatedSize");
     let used_size = row.get_bigint_by_name("UsedSize");
-    let unlimited = row.get_bigint_by_name("Unlimited");
+    let unlimited = row.get_value_by_name("Unlimited");
     format!(
         "{}{sep}{}{sep}{}{sep}{}{sep}{}{sep}{}{sep}{}{sep}{}\n",
         instance_name,
@@ -1305,14 +1336,24 @@ struct Counter {
 
 impl From<&Row> for Counter {
     fn from(row: &Row) -> Self {
+        let instance = row.get_value_by_idx(2).trim().replace(' ', "_").to_string();
         Self {
-            name: row.get_value_by_idx(0).trim().replace(' ', "_").to_string(),
+            name: row
+                .get_value_by_idx(0)
+                .trim()
+                .replace(' ', "_")
+                .to_string()
+                .to_lowercase(),
             object: row
                 .get_value_by_idx(1)
                 .trim()
                 .replace([' ', '$'], "_")
                 .to_string(),
-            instance: row.get_value_by_idx(2).trim().replace(' ', "_").to_string(),
+            instance: if instance.is_empty() {
+                "None".to_string()
+            } else {
+                instance
+            },
             value: row.get_bigint_by_idx(3).to_string(),
         }
     }
@@ -1352,25 +1393,27 @@ impl CheckConfig {
         if let Some(ms_sql) = self.ms_sql() {
             CheckConfig::prepare_cache_sub_dir(environment, ms_sql.hash());
             log::info!("Generating main data");
-            let data = generate_data(ms_sql, environment)
-                .await
-                .unwrap_or_else(|e| {
-                    log::error!("Error generating data: {e}");
-                    format!("{e}\n")
-                });
             let mut output: Vec<String> = Vec::new();
-            for config in ms_sql.configs() {
+            output.push(
+                generate_data(ms_sql, environment)
+                    .await
+                    .unwrap_or_else(|e| {
+                        log::error!("Error generating data at main config: {e}");
+                        format!("{e}\n")
+                    }),
+            );
+            for (num, config) in std::iter::zip(0.., ms_sql.configs()) {
                 log::info!("Generating configs data");
-                CheckConfig::prepare_cache_sub_dir(environment, config.hash());
+                CheckConfig::prepare_cache_sub_dir(environment, &config.cache_dir());
                 let configs_data = generate_data(config, environment)
                     .await
                     .unwrap_or_else(|e| {
-                        log::error!("Error generating data: {e}");
+                        log::error!("Error generating data at config {num}: {e}");
                         format!("{e}\n")
                     });
                 output.push(configs_data);
             }
-            Ok(data + &output.join(""))
+            Ok(output.join(""))
         } else {
             log::error!("No config");
             anyhow::bail!("No Config")
@@ -1391,7 +1434,7 @@ fn generate_dumb_header(ms_sql: &config::ms_sql::Config) -> String {
     ms_sql
         .valid_sections()
         .iter()
-        .map(|s| Section::new(s, ms_sql.cache_age()).to_plain_header())
+        .map(|s| Section::new(s, Some(ms_sql.cache_age())).to_plain_header())
         .collect::<Vec<_>>()
         .join("")
 }
@@ -1424,15 +1467,33 @@ fn generate_signaling_block(
 async fn generate_data(ms_sql: &config::ms_sql::Config, environment: &Env) -> Result<String> {
     let instances = find_usable_instances(ms_sql, environment).await?;
     if instances.is_empty() {
-        return Ok("ERROR: Failed to gather SQL server instances".to_string());
+        return Ok(generate_signaling_block(ms_sql, &None)
+            + "ERROR: Failed to gather SQL server instances\n");
     } else {
-        log::info!("Found {} SQL server instances", instances.len())
+        log::info!(
+            "Found {} SQL server instances: [ {} ]",
+            instances.len(),
+            instances
+                .iter()
+                .map(|i| format!("{}", i))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 
     let sections = ms_sql
         .valid_sections()
         .into_iter()
-        .map(|s| Section::new(s, ms_sql.cache_age()))
+        .map(|s| {
+            Section::new(
+                s,
+                if environment.disable_caching() {
+                    None
+                } else {
+                    Some(ms_sql.cache_age())
+                },
+            )
+        })
         .collect::<Vec<_>>();
 
     Ok(generate_signaling_blocks(ms_sql, &instances)
@@ -1468,16 +1529,17 @@ async fn find_usable_instances(
 ) -> Result<Vec<SqlInstance>> {
     let builders = find_usable_instance_builders(ms_sql).await?;
     if builders.is_empty() {
+        log::warn!("Found NO usable SQL server instances");
         return Ok(Vec::new());
     } else {
-        log::info!("Found {} SQL server instances", builders.len());
+        log::info!("Found {} usable SQL server instances", builders.len());
     }
 
     Ok(builders
         .into_iter()
         .map(|b: SqlInstanceBuilder| {
             b.environment(environment)
-                .hash(&ms_sql.hash().to_string().into())
+                .cache_dir(&ms_sql.cache_dir())
                 .build()
         })
         .collect::<Vec<SqlInstance>>())
@@ -1496,19 +1558,31 @@ async fn find_usable_instance_builders(
 pub async fn find_all_instance_builders(
     ms_sql: &config::ms_sql::Config,
 ) -> Result<Vec<SqlInstanceBuilder>> {
+    let found = find_detectable_instance_builders(ms_sql).await;
+    log::info!(
+        "Found {} instances by discovery: [ {} ]",
+        found.len(),
+        found
+            .iter()
+            .map(|i| format!("{}", i.get_name()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     let detected = if ms_sql.discovery().detect() {
-        find_detectable_instance_builders(ms_sql).await
+        found
     } else {
         ms_sql
             .discovery()
             .include()
             .iter()
             .map(|name| SqlInstanceBuilder::new().name(name))
-            .collect()
+            .collect::<Vec<SqlInstanceBuilder>>()
     }
     .into_iter()
     .map(|b| b.piggyback(ms_sql.piggyback_host().map(|h| h.to_string().into())))
     .collect();
+    // let d = HashSet::from_iter(detected) + HashSet::from_iter(predefined);
     let customizations: HashMap<&InstanceName, &CustomInstance> =
         ms_sql.instances().iter().map(|i| (i.name(), i)).collect();
     let builders = apply_customizations(detected, &customizations);
@@ -1519,7 +1593,7 @@ pub async fn find_all_instance_builders(
 async fn find_detectable_instance_builders(
     ms_sql: &config::ms_sql::Config,
 ) -> Vec<SqlInstanceBuilder> {
-    get_instance_builders(&ms_sql.endpoint())
+    obtain_instance_builders(&ms_sql.endpoint(), &[])
         .await
         .unwrap_or_else(|e| {
             log::warn!("Error discovering instances: {e}");
@@ -1530,10 +1604,10 @@ async fn find_detectable_instance_builders(
 /// find instances described in the config but not detected by the discovery
 /// may NOT work - should be approved during testing
 async fn add_custom_instance_builders(
-    builders: Vec<SqlInstanceBuilder>,
+    input_builders: Vec<SqlInstanceBuilder>,
     customizations: &HashMap<&InstanceName, &CustomInstance>,
 ) -> Result<Vec<SqlInstanceBuilder>> {
-    let reconnects = determine_reconnect(builders, customizations);
+    let reconnects = determine_reconnect(input_builders, customizations);
 
     let mut builders: Vec<SqlInstanceBuilder> = Vec::new();
     for (builder, endpoint) in reconnects.into_iter() {
@@ -1554,7 +1628,8 @@ async fn get_custom_instance_builder(
 ) -> Option<SqlInstanceBuilder> {
     let port = get_reasonable_port(builder, endpoint);
     let instance_name = &builder.get_name();
-    match client::create_on_endpoint_port(endpoint, port).await {
+    log::debug!("Trying to connect to `{instance_name}` using config port {port}");
+    let result = match client::connect_custom_endpoint(endpoint, port.clone()).await {
         Ok(mut client) => {
             let b = obtain_properties(&mut client, instance_name)
                 .await
@@ -1570,6 +1645,33 @@ async fn get_custom_instance_builder(
             log::error!("Error creating client for `{instance_name}`: {e}");
             None
         }
+    };
+    #[cfg(unix)]
+    return result;
+
+    #[cfg(windows)]
+    if result.is_none() {
+        log::info!(
+            "Instance `{instance_name}` at port {} not found. Try to use named connection.",
+            port.clone()
+        );
+        match client::connect_custom_instance(endpoint, instance_name).await {
+            Ok(mut client) => {
+                let b = obtain_properties(&mut client, instance_name)
+                    .await
+                    .map(|p| to_instance_builder(endpoint, &p));
+                if b.is_none() {
+                    log::error!("Instance `{instance_name}` not found. Impossible.");
+                }
+                b
+            }
+            Err(e) => {
+                log::warn!("Error creating client for `{instance_name}`: {e}");
+                find_custom_instance(endpoint, instance_name).await
+            }
+        }
+    } else {
+        result
     }
 }
 
@@ -1577,16 +1679,19 @@ async fn find_custom_instance(
     endpoint: &Endpoint,
     instance_name: &InstanceName,
 ) -> Option<SqlInstanceBuilder> {
-    let builders = get_instance_builders(endpoint).await.unwrap_or_else(|e| {
-        log::error!("Error creating client for instance `{instance_name}`: {e}",);
-        Vec::<SqlInstanceBuilder>::new()
-    });
+    let builders = obtain_instance_builders(endpoint, &[instance_name])
+        .await
+        .unwrap_or_else(|e| {
+            log::error!("Error creating client for instance `{instance_name}`: {e}",);
+            Vec::<SqlInstanceBuilder>::new()
+        });
     match detect_instance_port(instance_name, &builders) {
         Some(port) => {
-            if let Ok(mut client) = client::create_on_endpoint_port(endpoint, port).await {
+            log::info!("Instance `{instance_name}` found at port {port}");
+            if let Ok(mut client) = client::connect_custom_endpoint(endpoint, port.clone()).await {
                 obtain_properties(&mut client, instance_name)
                     .await
-                    .map(|p| to_instance_builder(endpoint, &p))
+                    .map(|p| to_instance_builder(endpoint, &p).port(Some(port)))
             } else {
                 None
             }
@@ -1632,7 +1737,7 @@ async fn obtain_properties(
     match SqlInstanceProperties::obtain_by_query(client).await {
         Ok(properties) => {
             if properties.name == *name {
-                log::info!("Custom instance `{name}` added");
+                log::info!("Custom instance `{name}` added in query");
                 return Some(properties);
             }
             log::error!(
@@ -1657,6 +1762,7 @@ fn to_instance_builder(
         .computer_name(Some(properties.computer_name.clone()))
         .version(&properties.version)
         .edition(&properties.edition)
+        .endpoint(endpoint)
         .port(Some(endpoint.conn().port()))
 }
 /// returns
@@ -1674,12 +1780,7 @@ fn determine_reconnect(
                 Some(customization)
                     if Some(&customization.endpoint()) != instance_builder.get_endpoint() =>
                 {
-                    log::info!(
-                        "Instance {} to be reconnected `{:?}` `{:?}`",
-                        instance_builder.get_name(),
-                        customization.endpoint(),
-                        instance_builder.get_endpoint()
-                    );
+                    log::info!("Instance {} to be reconnected", instance_builder.get_name(),);
                     (instance_builder, Some(customization.endpoint()))
                 }
                 _ => {
@@ -1750,7 +1851,7 @@ async fn generate_result(
         .map(move |instance| instance.generate_sections(ms_sql, sections));
 
     // processing here
-    let s: u32 = ms_sql.system().max_connections().into();
+    let s: u32 = ms_sql.options().max_connections().into();
     let results = stream::iter(tasks)
         .buffer_unordered(s as usize)
         .collect::<Vec<_>>()
@@ -1759,50 +1860,128 @@ async fn generate_result(
     Ok(results.join(""))
 }
 
-/// return all MS SQL instances installed
-async fn get_instance_builders(endpoint: &Endpoint) -> Result<Vec<SqlInstanceBuilder>> {
-    let all = obtain_instance_builders_from_registry(endpoint).await?;
-    Ok([&all.0[..], &all.1[..]].concat().to_vec())
-}
-
-// TODO(sk):probably SQL is better as registry
-/// [low level helper] return all MS SQL instances installed
-pub async fn obtain_instance_builders_from_registry(
+// TODO(sk):probably normal SQL query  is better than registry reading SQL query
+/// obtain all instances from endpoint, on Windows can try SQL Browser
+pub async fn obtain_instance_builders(
     endpoint: &Endpoint,
-) -> Result<(Vec<SqlInstanceBuilder>, Vec<SqlInstanceBuilder>)> {
-    match client::create_on_endpoint(endpoint).await {
-        Ok(mut client) => Ok((
-            exec_win_registry_sql_instances_query(
-                &mut client,
-                endpoint,
-                &sqls::get_win_registry_instances_query(),
-            )
-            .await?,
-            exec_win_registry_sql_instances_query(
-                &mut client,
-                endpoint,
-                &sqls::get_wow64_32_registry_instances_query(),
-            )
-            .await?,
-        )),
+    instances: &[&InstanceName],
+) -> Result<Vec<SqlInstanceBuilder>> {
+    match client::connect_main_endpoint(endpoint).await {
+        Ok(mut client) => Ok(_obtain_instance_builders(&mut client, endpoint).await),
         Err(err) => {
-            log::error!("Failed to create client: {err}");
-            anyhow::bail!("Failed to create client: {err}")
+            log::error!("Failed to create main client: {err}");
+            obtain_instance_builders_by_sql_browser(endpoint, instances).await
         }
     }
+}
+
+#[cfg(windows)]
+pub async fn obtain_instance_builders_by_sql_browser(
+    endpoint: &Endpoint,
+    instances: &[&InstanceName],
+) -> Result<Vec<SqlInstanceBuilder>> {
+    log::info!("Finding instances by SQL Browser");
+    for instance in instances {
+        match client::ClientBuilder::new()
+            .browse(
+                &endpoint.conn().hostname(),
+                instance,
+                endpoint.conn().sql_browser_port(),
+            )
+            .build()
+            .await
+        {
+            Ok(mut client) => return Ok(_obtain_instance_builders(&mut client, endpoint).await),
+            Err(err) => {
+                log::error!("Failed to create client: {err}");
+            }
+        }
+    }
+    anyhow::bail!("Impossible to connect")
+}
+
+#[cfg(unix)]
+pub async fn obtain_instance_builders_by_sql_browser(
+    _endpoint: &Endpoint,
+    _instances: &[&InstanceName],
+) -> Result<Vec<SqlInstanceBuilder>> {
+    anyhow::bail!("Failed to create client, sql browser on linux is not supported")
+}
+
+async fn _obtain_instance_builders(
+    client: &mut Client,
+    endpoint: &Endpoint,
+) -> Vec<SqlInstanceBuilder> {
+    let mut builders = try_find_instances_in_registry(client).await;
+    if builders.is_empty() {
+        log::warn!("No instances found in registry, this means you have problem with permissions");
+        log::warn!("Trying to add current instance");
+        match obtain_instance_name(client).await {
+            Ok(Some(name)) => {
+                let mut builder = SqlInstanceBuilder::new()
+                    .name(name)
+                    .port(Some(endpoint.conn().port()));
+                if let Ok(properties) = SqlInstanceProperties::obtain_by_query(client).await {
+                    builder = builder
+                        .version(&properties.version)
+                        .edition(&properties.edition);
+                }
+                builders = vec![builder];
+            }
+            Ok(None) => {
+                log::warn!(
+                    "No instance found in registry, this means you have problem with permissions"
+                );
+            }
+            Err(err) => {
+                log::error!("Can't confirm current instance: {err}");
+                return vec![];
+            }
+        };
+    }
+    let computer_name = obtain_computer_name(client).await.unwrap_or_default();
+    builders
+        .iter()
+        .map(|i| {
+            i.clone()
+                .endpoint(endpoint)
+                .computer_name(computer_name.clone())
+        })
+        .collect()
+}
+
+/// returns instances found in registry
+/// if registry is unavailable returns empty list, this is ok too
+async fn try_find_instances_in_registry(client: &mut Client) -> Vec<SqlInstanceBuilder> {
+    let mut result: Vec<SqlInstanceBuilder> = vec![];
+    for q in [
+        &sqls::get_win_registry_instances_query(),
+        &sqls::get_wow64_32_registry_instances_query(),
+    ] {
+        let instances = exec_win_registry_sql_instances_query(client, q)
+            .await
+            .unwrap_or_else(|e| {
+                log::info!("Can't get normal instances: {e}, it is not error");
+                Vec::new()
+            });
+        result.extend(instances);
+    }
+    log::debug!("Found in registry {:#?}", result);
+    result
 }
 
 /// return all MS SQL instances installed
 async fn exec_win_registry_sql_instances_query(
     client: &mut Client,
-    endpoint: &Endpoint,
     query: &str,
 ) -> Result<Vec<SqlInstanceBuilder>> {
     let answers = run_custom_query(client, query).await?;
-    if let Some(rows) = answers.get(0) {
-        let computer_name = obtain_computer_name(client).await.unwrap_or_default();
-        let instances = to_sql_instance(rows, endpoint, computer_name);
-        log::info!("Instances found {}", instances.len());
+    if let Some(rows) = answers.first() {
+        let instances = to_sql_instance(rows);
+        log::info!(
+            "Instances found in registry by SQL query on main instance {}",
+            instances.len()
+        );
         Ok(instances)
     } else {
         log::warn!("Empty answer by query: {query}");
@@ -1810,18 +1989,9 @@ async fn exec_win_registry_sql_instances_query(
     }
 }
 
-fn to_sql_instance(
-    rows: &Answer,
-    endpoint: &Endpoint,
-    computer_name: Option<ComputerName>,
-) -> Vec<SqlInstanceBuilder> {
+fn to_sql_instance(rows: &Answer) -> Vec<SqlInstanceBuilder> {
     rows.iter()
-        .map(|r| {
-            SqlInstanceBuilder::new()
-                .row(r)
-                .computer_name(computer_name.clone())
-                .endpoint(endpoint)
-        })
+        .map(|r| SqlInstanceBuilder::new().row(r))
         .collect::<Vec<SqlInstanceBuilder>>()
         .to_vec()
 }
@@ -1841,12 +2011,12 @@ mod tests {
         let i = SqlInstanceBuilder::new().name("test_name").build();
 
         assert_eq!(
-            i.generate_state_entry(false, '.'),
-            format!("MSSQL_TEST_NAME.state.0\n")
+            i.generate_bad_state_entry('.', "bad"),
+            format!("MSSQL_TEST_NAME.state.0.bad\n")
         );
         assert_eq!(
-            i.generate_state_entry(true, '.'),
-            format!("MSSQL_TEST_NAME.state.1\n")
+            i.generate_good_state_entry('.'),
+            format!("MSSQL_TEST_NAME.state.1.\n")
         );
     }
 
@@ -1957,7 +2127,7 @@ mssql:
             .dynamic_port(Some(Port(1u16)))
             .port(Some(Port(2u16)))
             .computer_name(Some("computer_name".to_string().into()))
-            .hash(&"hash".to_string().into())
+            .cache_dir("hash")
             .version(&"version".to_string().into())
             .edition(&"edition".to_string().into())
             .environment(&Env::new(&args))
@@ -1973,7 +2143,7 @@ mssql:
         assert!(s.cluster.is_none());
         assert_eq!(s.version.to_string(), "version");
         assert_eq!(s.edition.to_string(), "edition");
-        assert_eq!(s.hash, "hash".to_string().into());
+        assert_eq!(s.cache_dir, "hash");
         assert_eq!(s.port, Some(Port(2u16)));
         assert_eq!(s.dynamic_port, Some(Port(1u16)));
 

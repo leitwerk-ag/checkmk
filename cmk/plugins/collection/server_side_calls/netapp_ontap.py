@@ -3,36 +3,28 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+from collections.abc import Iterator
 
-from collections.abc import Iterator, Mapping
-from typing import Literal
+from pydantic import BaseModel
 
-from pydantic import BaseModel, Field
-
-from cmk.server_side_calls.v1 import (
-    HostConfig,
-    HTTPProxy,
-    parse_secret,
-    Secret,
-    SpecialAgentCommand,
-    SpecialAgentConfig,
-)
+from cmk.server_side_calls.v1 import HostConfig, Secret, SpecialAgentCommand, SpecialAgentConfig
 
 
 class NetappOntapParams(BaseModel):
     username: str
-    password: tuple[Literal["password", "store"], str]
-    no_cert_check: bool = Field(default=False, alias="no-cert-check")
+    password: Secret
+    no_cert_check: bool
 
 
-def generate_netapp_ontap_command(  # pylint: disable=too-many-branches
-    params: NetappOntapParams, host_config: HostConfig, http_proxies: Mapping[str, HTTPProxy]
+def generate_netapp_ontap_command(
+    params: NetappOntapParams,
+    host_config: HostConfig,
 ) -> Iterator[SpecialAgentCommand]:
     args: list[str | Secret]
 
-    args = ["--hostname", host_config.address_config.ipv4_address or host_config.name]
+    args = ["--hostname", host_config.primary_ip_config.address]
     args += ["--username", params.username]
-    args += ["--password", parse_secret(params.password)]
+    args += ["--password", params.password.unsafe()]
 
     if params.no_cert_check:
         args += ["--no-cert-check"]

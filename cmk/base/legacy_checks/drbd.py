@@ -130,8 +130,7 @@ import time
 from cmk.base.check_api import LegacyCheckDefinition, state_markers
 from cmk.base.config import check_info
 
-from cmk.agent_based.v2 import get_rate, get_value_store
-from cmk.agent_based.v2.type_defs import StringTable
+from cmk.agent_based.v2 import get_rate, get_value_store, StringTable
 
 _drbd_block_start_match = re.compile("^[0-9]+:")
 
@@ -270,7 +269,7 @@ def check_drbd_general(item, params, info):  # pylint: disable=too-many-branches
     if parsed is not None:
         if parsed["cs"] == "Unconfigured":
             return (2, 'The device is "Unconfigured"')
-        if not parsed["cs"] in drbd_cs_map:
+        if parsed["cs"] not in drbd_cs_map:
             return (3, 'Undefined "connection state" in drbd output')
 
         # Weight of connection state is calculated by the drbd_cs_map.

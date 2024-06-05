@@ -4,12 +4,21 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 from collections.abc import Mapping
 
-from cmk.rulesets.v1 import Localizable
-from cmk.rulesets.v1.form_specs import Migrate
-from cmk.rulesets.v1.form_specs.basic import BinaryUnit, DataSize, Float, Integer, Text
-from cmk.rulesets.v1.form_specs.composed import DictElement, Dictionary
-from cmk.rulesets.v1.form_specs.levels import LevelDirection, Levels
+from cmk.rulesets.v1 import Label, Title
+from cmk.rulesets.v1.form_specs import (
+    DataSize,
+    DictElement,
+    Dictionary,
+    Float,
+    IECMagnitude,
+    InputHint,
+    Integer,
+    LevelDirection,
+    SimpleLevels,
+)
 from cmk.rulesets.v1.rule_specs import CheckParameters, HostAndItemCondition, Topic
+
+MAGNITUDES = tuple(IECMagnitude)[:5]
 
 
 def _migrate_levels(
@@ -36,95 +45,71 @@ def _parameter_form_rabbitmq_nodes_gc() -> Dictionary:
     return Dictionary(
         elements={
             "gc_num_upper": DictElement(
-                parameter_form=Levels(
-                    form_spec_template=Integer(unit=Localizable("runs")),
+                parameter_form=SimpleLevels(
+                    form_spec_template=Integer(label=Label("Number of runs:")),
                     level_direction=LevelDirection.UPPER,
-                    predictive=None,
-                    title=Localizable("Upper level for total number of GC runs"),
+                    prefill_fixed_levels=InputHint((0, 0)),
+                    title=Title("Upper level for GC runs"),
                 )
             ),
             "gc_num_rate_upper": DictElement(
-                parameter_form=Levels(
-                    form_spec_template=Float(unit=Localizable("1/s")),
+                parameter_form=SimpleLevels(
+                    form_spec_template=Float(unit_symbol="1/s"),
                     level_direction=LevelDirection.UPPER,
-                    predictive=None,
-                    title=Localizable("Upper level for GC run rate"),
+                    prefill_fixed_levels=InputHint((0.0, 0.0)),
+                    title=Title("Upper level for GC run rate"),
                 )
             ),
             "gc_num_rate_lower": DictElement(
-                parameter_form=Levels(
-                    form_spec_template=Float(unit=Localizable("1/s")),
+                parameter_form=SimpleLevels(
+                    form_spec_template=Float(unit_symbol="1/s"),
                     level_direction=LevelDirection.LOWER,
-                    predictive=None,
-                    title=Localizable("Lower level for GC run rate"),
+                    prefill_fixed_levels=InputHint((0.0, 0.0)),
+                    title=Title("Lower level for GC run rate"),
                 )
             ),
             "gc_bytes_reclaimed_upper": DictElement(
-                parameter_form=Levels(
-                    form_spec_template=DataSize(
-                        displayed_units=[
-                            BinaryUnit.BYTE,
-                            BinaryUnit.KIBIBYTE,
-                            BinaryUnit.MEBIBYTE,
-                            BinaryUnit.GIBIBYTE,
-                            BinaryUnit.TEBIBYTE,
-                        ]
-                    ),
+                parameter_form=SimpleLevels(
+                    form_spec_template=DataSize(displayed_magnitudes=MAGNITUDES),
                     level_direction=LevelDirection.UPPER,
-                    predictive=None,
-                    title=Localizable("Absolute levels for memory reclaimed by GC"),
+                    prefill_fixed_levels=InputHint((0, 0)),
+                    title=Title("Absolute levels for memory reclaimed by GC"),
                 )
             ),
             "gc_bytes_reclaimed_rate_upper": DictElement(
-                parameter_form=Levels(
-                    form_spec_template=DataSize(
-                        displayed_units=[
-                            BinaryUnit.BYTE,
-                            BinaryUnit.KIBIBYTE,
-                            BinaryUnit.MEBIBYTE,
-                            BinaryUnit.GIBIBYTE,
-                            BinaryUnit.TEBIBYTE,
-                        ]
-                    ),
+                parameter_form=SimpleLevels(
+                    form_spec_template=DataSize(displayed_magnitudes=MAGNITUDES),
                     level_direction=LevelDirection.UPPER,
-                    predictive=None,
-                    title=Localizable("Upper level for rate of memory reclaimed by GC"),
+                    prefill_fixed_levels=InputHint((0, 0)),
+                    title=Title("Upper level for rate of memory reclaimed by GC"),
                 )
             ),
             "gc_bytes_reclaimed_rate_lower": DictElement(
-                parameter_form=Levels(
-                    form_spec_template=DataSize(
-                        displayed_units=[
-                            BinaryUnit.BYTE,
-                            BinaryUnit.KIBIBYTE,
-                            BinaryUnit.MEBIBYTE,
-                            BinaryUnit.GIBIBYTE,
-                            BinaryUnit.TEBIBYTE,
-                        ]
-                    ),
+                parameter_form=SimpleLevels(
+                    form_spec_template=DataSize(displayed_magnitudes=MAGNITUDES),
                     level_direction=LevelDirection.LOWER,
-                    predictive=None,
-                    title=Localizable("Lower level for rate of memory reclaimed by GC"),
+                    prefill_fixed_levels=InputHint((0, 0)),
+                    title=Title("Lower level for rate of memory reclaimed by GC"),
                 )
             ),
             "runqueue_upper": DictElement(
-                parameter_form=Levels(
+                parameter_form=SimpleLevels(
                     form_spec_template=Integer(),
                     level_direction=LevelDirection.UPPER,
-                    predictive=None,
-                    title=Localizable("Upper level for runtime run queue"),
+                    prefill_fixed_levels=InputHint((0, 0)),
+                    title=Title("Upper level for runtime run queue"),
                 )
             ),
             "runqueue_lower": DictElement(
-                parameter_form=Levels(
+                parameter_form=SimpleLevels(
                     form_spec_template=Integer(),
                     level_direction=LevelDirection.LOWER,
-                    predictive=None,
-                    title=Localizable("Lower level for runtime run queue"),
+                    prefill_fixed_levels=InputHint((0, 0)),
+                    title=Title("Lower level for runtime run queue"),
                 )
             ),
         },
-        transform=Migrate(model_to_form=_migrate_levels),
+        migrate=_migrate_levels,
     )
 
 
@@ -132,6 +117,6 @@ rule_spec_rabbitmq_nodes_gc = CheckParameters(
     name="rabbitmq_nodes_gc",
     topic=Topic.APPLICATIONS,
     parameter_form=_parameter_form_rabbitmq_nodes_gc,
-    title=Localizable("RabbitMQ nodes GC"),
-    condition=HostAndItemCondition(item_form=Text(title=Localizable("Node name"))),
+    title=Title("RabbitMQ nodes GC"),
+    condition=HostAndItemCondition(item_title=Title("Node name")),
 )

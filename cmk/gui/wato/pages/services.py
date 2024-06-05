@@ -8,6 +8,7 @@ import json
 import pprint
 import traceback
 from collections.abc import Collection, Container, Iterable, Iterator, Mapping, Sequence
+from dataclasses import asdict
 from typing import Any, Literal, NamedTuple
 
 from livestatus import SiteId
@@ -25,7 +26,6 @@ from cmk.utils.site import omd_site
 from cmk.utils.statename import short_service_state_name
 from cmk.utils.version import __version__, Version
 
-from cmk.checkengine.checking import CheckPluginNameStr
 from cmk.checkengine.discovery import CheckPreviewEntry
 
 from cmk.gui.background_job import JobStatusStates
@@ -60,7 +60,7 @@ from cmk.gui.utils.output_funnel import output_funnel
 from cmk.gui.utils.popups import MethodAjax
 from cmk.gui.utils.transaction_manager import transactions
 from cmk.gui.utils.urls import DocReference
-from cmk.gui.view_utils import format_plugin_output, render_labels
+from cmk.gui.view_utils import format_plugin_output, LabelRenderType, render_labels
 from cmk.gui.wato.pages.hosts import ModeEditHost
 from cmk.gui.watolib.activate_changes import ActivateChanges, get_pending_changes_tooltip
 from cmk.gui.watolib.audit_log_url import make_object_audit_log_url
@@ -90,6 +90,7 @@ from cmk.gui.watolib.services import (
     perform_fix_all,
     perform_host_label_discovery,
     perform_service_discovery,
+    ServiceDiscoveryBackgroundJob,
     UpdateType,
 )
 from cmk.gui.watolib.utils import may_edit_ruleset, mk_repr
@@ -118,6 +119,7 @@ def register(
     page_registry.register_page("wato_ajax_execute_check")(ModeAjaxExecuteCheck)
     mode_registry.register(ModeDiscovery)
     automation_command_registry.register(AutomationServiceDiscoveryJob)
+    automation_command_registry.register(AutomationServiceDiscoveryJobSnapshot)
 
 
 class ModeDiscovery(WatoMode):
@@ -141,9 +143,9 @@ class ModeDiscovery(WatoMode):
         return ModeEditHost
 
     def _from_vars(self) -> None:
-        self._host = folder_from_request().load_host(
-            HostName(request.get_ascii_input_mandatory("host"))
-        )
+        self._host = folder_from_request(
+            request.var("folder"), request.get_ascii_input("host")
+        ).load_host(request.get_validated_type_input_mandatory(HostName, "host"))
         if not self._host:
             raise MKUserError("host", _("You called this page with an invalid host name."))
 
@@ -211,6 +213,24 @@ class _AutomationServiceDiscoveryRequest(NamedTuple):
     host_name: HostName
     action: DiscoveryAction
     raise_errors: bool
+
+
+class AutomationServiceDiscoveryJobSnapshot(AutomationCommand):
+    """Fetch the service discovery background job snapshot on a remote site"""
+
+    def command_name(self) -> str:
+        return "service-discovery-job-snapshot"
+
+    def get_request(self) -> HostName:
+        return request.get_validated_type_input_mandatory(HostName, "hostname")
+
+    def execute(self, api_request: HostName) -> str:
+        job = ServiceDiscoveryBackgroundJob(api_request)
+        job_snapshot = asdict(job.get_status_snapshot())
+        if "status" in job_snapshot:
+            # additional conversion due to pydantic usage for status only
+            job_snapshot["status"] = json.loads(job_snapshot["status"].json())
+        return json.dumps(job_snapshot)
 
 
 class AutomationServiceDiscoveryJob(AutomationCommand):
@@ -312,7 +332,12 @@ class ModeAjaxServiceDiscovery(AjaxPage):
         )
         if self._sources_failed_on_first_attempt(previous_discovery_result, discovery_result):
             discovery_result = discovery_result._replace(
-                check_table=(), host_labels={}, new_labels={}, vanished_labels={}, changed_labels={}
+                check_table=(),
+                nodes_check_table={},
+                host_labels={},
+                new_labels={},
+                vanished_labels={},
+                changed_labels={},
             )
 
         if not discovery_result.check_table_created and previous_discovery_result:
@@ -371,7 +396,7 @@ class ModeAjaxServiceDiscovery(AjaxPage):
         previous_discovery_result: DiscoveryResult | None,
         update_source: str | None,
         update_target: str | None,
-        selected_services: Container[tuple[CheckPluginNameStr, Item]],
+        selected_services: Container[tuple[str, Item]],
         *,
         raise_errors: bool,
     ) -> DiscoveryResult:
@@ -474,7 +499,7 @@ class ModeAjaxServiceDiscovery(AjaxPage):
     @staticmethod
     def _resolve_selected_services(
         update_services: list[str], checkboxes_where_avaliable: bool
-    ) -> Container[tuple[CheckPluginNameStr, Item]]:
+    ) -> Container[tuple[str, Item]]:
         if update_services:
             return {checkbox_service(e) for e in update_services}
         # empty list can mean everything or nothing.
@@ -648,7 +673,12 @@ class DiscoveryPageRenderer:
                 html.write_html(HTML(get_html_state_marker(state)))
                 html.close_td()
                 # Make sure not to show long output
-                html.td(format_plugin_output(output.split("\n", 1)[0].replace(" ", ": ", 1)))
+                html.td(
+                    format_plugin_output(
+                        output.split("\n", 1)[0].replace(" ", ": ", 1),
+                        request=request,
+                    )
+                )
                 html.close_tr()
             html.close_table()
 
@@ -657,7 +687,7 @@ class DiscoveryPageRenderer:
             return output_funnel.drain()
 
     def _show_discovered_host_labels(self, discovery_result: DiscoveryResult) -> None:
-        if not discovery_result.host_labels:
+        if not discovery_result.host_labels and not discovery_result.vanished_labels:
             return None
 
         with table_element(
@@ -735,6 +765,7 @@ class DiscoveryPageRenderer:
                 "host",
                 with_links=False,
                 label_sources={label_id: "discovered" for label_id in host_labels.keys()},
+                request=request,
             )
             table.cell(_("Host labels"), labels_html, css=["expanding"])
             return
@@ -742,22 +773,17 @@ class DiscoveryPageRenderer:
         plugin_names = HTML("")
         labels_html = HTML("")
         for label_id, label in host_labels.items():
-            label_data = {label_id: label["value"]}
-            ctype = label["plugin_name"]
-
-            manpage_url = folder_preserving_link([("mode", "check_manpage"), ("check_type", ctype)])
-            plugin_names += (
-                HTMLWriter.render_a(content=ctype, href=manpage_url) + HTMLWriter.render_br()
-            )
+            plugin_names += HTMLWriter.render_p(label["plugin_name"])
             labels_html += render_labels(
-                label_data,
+                {label_id: label["value"]},
                 "host",
                 with_links=False,
                 label_sources={label_id: "discovered"},
+                request=request,
             )
 
         table.cell(_("Host labels"), labels_html, css=["expanding"])
-        table.cell(_("Check Plugin"), plugin_names, css=["plugins"])
+        table.cell(_("Check plug-in"), plugin_names, css=["plugins"])
         return
 
     def _show_discovery_details(self, discovery_result: DiscoveryResult, api_request: dict) -> None:
@@ -1081,13 +1107,13 @@ class DiscoveryPageRenderer:
                 }
                 table.cell(_("Newly discovered"))
                 self._show_discovered_labels(unchanged_labels)
-                self._show_discovered_labels(changed_labels, label_type="changed")
-                self._show_discovered_labels(added_labels, label_type="added")
-                self._show_discovered_labels(removed_labels, label_type="removed")
+                self._show_discovered_labels(changed_labels, override_label_render_type="changed")
+                self._show_discovered_labels(added_labels, override_label_render_type="added")
+                self._show_discovered_labels(removed_labels, override_label_render_type="removed")
 
         if self._options.show_plugin_names:
             table.cell(
-                _("Check plugin"),
+                _("Check plug-in"),
                 HTMLWriter.render_a(content=ctype, href=manpage_url),
                 css=["plugins"],
             )
@@ -1105,7 +1131,9 @@ class DiscoveryPageRenderer:
                 html.write_html(
                     HTML(
                         format_plugin_output(
-                            output, shall_escape=active_config.escape_plugin_output
+                            output,
+                            request=request,
+                            shall_escape=active_config.escape_plugin_output,
                         )
                     )
                 )
@@ -1161,13 +1189,17 @@ class DiscoveryPageRenderer:
             html.write_text(paramtext)
 
     def _show_discovered_labels(
-        self, service_labels: Labels, label_type: str = "discovered"
+        self,
+        service_labels: Labels,
+        override_label_render_type: LabelRenderType | None = None,
     ) -> None:
         label_code = render_labels(
             service_labels,
             "service",
             with_links=False,
-            label_sources={k: label_type for k in service_labels.keys()},
+            label_sources={k: "discovered" for k in service_labels.keys()},
+            override_label_render_type=override_label_render_type,
+            request=request,
         )
         html.write_html(label_code)
 
@@ -1584,7 +1616,7 @@ class DiscoveryPageRenderer:
                 title=_("Active checks"),
                 help_text=_(
                     "These services do not use the Checkmk agent or Checkmk-SNMP engine but actively "
-                    "call classical check plugins. They have been added by a rule in the section "
+                    "call classical check plug-ins. They have been added by a rule in the section "
                     "<i>Active checks</i> or implicitely by Checkmk."
                 ),
             ),
@@ -1603,7 +1635,7 @@ class DiscoveryPageRenderer:
                 title=_("Custom checks - defined via rule"),
                 help_text=_(
                     "These services do not use the Checkmk agent or Checkmk-SNMP engine but actively "
-                    "call a classical check plugin, that you have installed yourself."
+                    "call a classical check plug-in, that you have installed yourself."
                 ),
             ),
             TableGroupEntry(
@@ -1650,7 +1682,7 @@ class DiscoveryPageRenderer:
                 title=_("Disabled active checks"),
                 help_text=_(
                     "These services do not use the Checkmk agent or Checkmk-SNMP engine but actively "
-                    "call classical check plugins. They have been added by a rule in the section "
+                    "call classical check plug-ins. They have been added by a rule in the section "
                     "<i>Active checks</i> or implicitely by Checkmk. "
                     "These services have been disabled by creating a rule in the rule set "
                     "<i>Disabled services</i> oder <i>Disabled checks</i>."
@@ -1662,7 +1694,7 @@ class DiscoveryPageRenderer:
                 title=_("Disabled custom checks - defined via rule"),
                 help_text=_(
                     "These services do not use the Checkmk agent or Checkmk-SNMP engine but actively "
-                    "call a classical check plugin, that you have installed yourself. "
+                    "call a classical check plug-in, that you have installed yourself. "
                     "These services have been disabled by creating a rule in the rule set "
                     "<i>Disabled services</i> oder <i>Disabled checks</i>."
                 ),
@@ -1676,8 +1708,10 @@ class ModeAjaxExecuteCheck(AjaxPage):
         if self._site not in sitenames():
             raise MKUserError("site", _("You called this page with an invalid site."))
 
-        self._host_name = HostName(request.get_ascii_input_mandatory("host"))
-        self._host = folder_from_request().host(self._host_name)
+        self._host_name = request.get_validated_type_input_mandatory(HostName, "host")
+        self._host = folder_from_request(request.var("folder"), self._host_name).host(
+            self._host_name
+        )
         if not self._host:
             raise MKUserError("host", _("You called this page with an invalid host name."))
         self._host.permissions.need_permission("read")
@@ -1906,7 +1940,7 @@ def _page_menu_entry_show_discovered_labels(host: Host, options: DiscoveryOption
 
 def _page_menu_entry_show_plugin_names(host: Host, options: DiscoveryOptions) -> PageMenuEntry:
     return PageMenuEntry(
-        title=_("Show plugin names"),
+        title=_("Show plug-in names"),
         icon_name="toggle_on" if options.show_plugin_names else "toggle_off",
         item=make_simple_link(
             _checkbox_js_url(
@@ -2130,7 +2164,7 @@ def _start_js_call(host: Host, options: DiscoveryOptions, request_vars: dict | N
 
 def ajax_popup_service_action_menu() -> None:
     checkbox_name = request.get_ascii_input_mandatory("checkboxname")
-    hostname = HostName(request.get_ascii_input_mandatory("hostname"))
+    hostname = request.get_validated_type_input_mandatory(HostName, "hostname")
     entry = CheckPreviewEntry(*json.loads(request.get_ascii_input_mandatory("entry")))
     if checkbox_name is None or hostname is None or not entry:
         html.show_error(_("Cannot render dropdown: Missing required information"))

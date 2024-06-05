@@ -11,7 +11,7 @@ import time
 import traceback
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 import livestatus
 
@@ -35,6 +35,7 @@ from cmk.gui.i18n import _, _l
 from cmk.gui.log import logger
 from cmk.gui.logged_in import user
 from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.nodevis import frontend_texts
 from cmk.gui.nodevis.filters import FilterTopologyMaxNodes, FilterTopologyMeshDepth
 from cmk.gui.nodevis.type_defs import (
     FrontendConfiguration,
@@ -84,7 +85,7 @@ from cmk.gui.visuals.filter import FilterRegistry
 
 
 @request_memoize()
-def _core_data_provider():
+def _core_data_provider() -> CoreDataProvider:
     return CoreDataProvider()
 
 
@@ -222,7 +223,10 @@ class ABCTopologyPage(Page):
         )
         result = _compute_topology_response(topology_configuration)
         html.javascript(
-            f"{self._instance_name} = new cmk.nodevis.TopologyVisualization({json.dumps(div_id)},{json.dumps(topology_configuration.type)});"
+            f"{self._instance_name} = new cmk.nodevis.TopologyVisualization({json.dumps(div_id)},"
+            f"{json.dumps(topology_configuration.type)},"
+            f"{json.dumps(frontend_texts.get_texts())}"
+            f");"
         )
 
         html.javascript(f"{self._instance_name}.show_topology({json.dumps(result)})")
@@ -286,6 +290,7 @@ class ParentChildTopologyPage(ABCTopologyPage):
             "link_from": {},
             "add_context_to_title": True,
             "packaged": False,
+            "megamenu_search_terms": [],
         }
 
     @classmethod
@@ -327,6 +332,7 @@ class NetworkTopologyPage(ABCTopologyPage):
             "link_from": {},
             "add_context_to_title": True,
             "packaged": False,
+            "megamenu_search_terms": [],
         }
 
     @classmethod
@@ -382,6 +388,7 @@ class ABCTopologyNodeDataGenerator:
         data_folder: Path,
         add_data_root_node: bool = True,
     ):
+        self._link_metadata: dict[tuple[str, str], Any] = {}
         self._topology_configuration = topology_configuration
         self._root_hostnames_from_core = root_hostnames_from_core
         self._data_folder = data_folder
@@ -394,6 +401,10 @@ class ABCTopologyNodeDataGenerator:
     @abc.abstractmethod
     def unique_id(self) -> str:
         pass
+
+    @property
+    def link_metadata(self) -> dict[tuple[str, str], Any]:
+        return self._link_metadata
 
     @abc.abstractmethod
     def name(self) -> str:
@@ -662,8 +673,13 @@ class NetworkDataLookup:
     def translate_hostnames_to_network_id(self, hostnames: set[HostName]) -> set[str]:
         return {self.hostname[x] for x in hostnames if x in self.hostname}
 
-    def core_entity_for_id(self, node_id: str) -> str | tuple[str, str] | None:
-        return self.id.get(node_id, {}).get("link", {}).get("core")
+    def core_entity_for_id(self, node_id: str) -> HostName | tuple[HostName, str] | None:
+        value = self.id.get(node_id, {}).get("link", {}).get("core")
+        if value is None:
+            return value
+        if isinstance(value, str):
+            return HostName(value)
+        return HostName(value[0]), value[1]
 
 
 def _get_network_data(folder: Path, data_type: str) -> NetworkDataLookup:
@@ -733,23 +749,25 @@ class GenericNetworkDataGenerator(ABCTopologyNodeDataGenerator):
         extra_info = self._node_extra_info.get(node.id)
         result: dict[str, Any] = {}
         if extra_info:
-            if "service" in extra_info:
-                result["core"] = {
-                    "hostname": extra_info["hostname"],
-                    "service": extra_info["service"],
-                    "state": extra_info["state"],
-                }
-            else:
-                result["core"] = {
-                    "hostname": extra_info["hostname"],
-                    "state": self._map_host_state(node, extra_info),
-                    "num_services_warn": extra_info["num_services_warn"],
-                    "num_services_crit": extra_info["num_services_crit"],
-                }
-            if icon := node.metadata.get("icon"):
-                result["core"]["icon"] = theme.detect_icon_path(icon, prefix="")
-            elif icon := extra_info.get("icon"):
-                result["core"]["icon"] = icon
+            core_values = {}
+            for what in ("service", "hostname", "state", "num_services_warn", "num_services_crit"):
+                if (value := extra_info.get(what)) is not None:
+                    core_values[what] = value
+            if "state" in core_values and "service" not in core_values:
+                core_values["state"] = self._map_host_state(node, extra_info)
+
+            if icon := extra_info.get("icon"):
+                core_values["icon"] = icon
+            result["core"] = core_values
+
+        image_metadata = node.metadata.get("images", {})
+        for icon_type in ("icon", "emblem"):
+            if icon := image_metadata.get(icon_type):
+                result.setdefault("node_images", {})[icon_type] = theme.detect_icon_path(icon, "")
+
+        if tooltip := node.metadata.get("tooltip"):
+            result["tooltip"] = tooltip
+
         if custom_settings := self._topology_configuration.frontend.custom_node_settings.get(
             node.id
         ):
@@ -767,6 +785,11 @@ class GenericNetworkDataGenerator(ABCTopologyNodeDataGenerator):
         }
         return state_map.get(extra_info["state"], 3)
 
+    def _store_link_metadata(
+        self, source_id: str, target_id: str, metadata: dict[str, Any]
+    ) -> None:
+        self._link_metadata.setdefault((source_id, target_id), {}).update(metadata)
+
     def _fetch_data(self, node_ids: set[str]) -> TopologyNodes:
         response: TopologyNodes = {}
         for node_id in node_ids:
@@ -776,13 +799,14 @@ class GenericNetworkDataGenerator(ABCTopologyNodeDataGenerator):
                     name=network_object.get("name", node_id),
                     metadata=network_object.get("metadata", {}),
                 )
-                for (source, target), _metadata in self._network_data.connections_by_id.get(
+                for (source, target), metadata in self._network_data.connections_by_id.get(
                     node_id, []
                 ):
                     if source == node_id:
                         topology_node.outgoing.add(target)
                     else:
                         topology_node.incoming.add(source)
+                    self._store_link_metadata(source, target, metadata)
                 response[node_id] = topology_node
         return response
 
@@ -841,7 +865,7 @@ class GenericNetworkDataGenerator(ABCTopologyNodeDataGenerator):
 
         # Depending on the configuration, remove service nodes and link hosts directly
         for node_id, node in list(self._topology_nodes.items()):
-            if node.type != NodeType.TOPOLOGY_SERVICE:
+            if node.type not in (NodeType.TOPOLOGY_SERVICE, NodeType.TOPOLOGY_UNKNOWN_SERVICE):
                 continue
 
             visibility = general_service_visibility
@@ -870,9 +894,9 @@ class GenericNetworkDataGenerator(ABCTopologyNodeDataGenerator):
             node.type = NodeType.TOPOLOGY_UNKNOWN
             if core_entity := self._network_data.core_entity_for_id(node_id):
                 if isinstance(core_entity, str):
-                    core_hostnames.add(core_entity)
+                    core_hostnames.add(HostName(core_entity))
                 else:
-                    core_services.add(tuple(core_entity))
+                    core_services.add((HostName(core_entity[0]), core_entity[1]))
 
         core_data_provider = _core_data_provider()
         core_data_provider.fetch_host_info(core_hostnames)
@@ -880,32 +904,47 @@ class GenericNetworkDataGenerator(ABCTopologyNodeDataGenerator):
 
         for node_id, node in self._topology_nodes.items():
             if core_entity := self._network_data.core_entity_for_id(node_id):
-                if isinstance(core_entity, str):
-                    if info := core_data_provider.core_hosts.get(core_entity):
-                        node.type = NodeType.TOPOLOGY_HOST
-                        self._node_extra_info[node_id] = {
-                            "site": info.site,
-                            "hostname": info.hostname,
-                            "icon": theme.detect_icon_path(info.icon_image, "icon_")
-                            if info.icon_image
-                            else None,
-                            "state": info.state,
-                            "has_been_checked": info.has_been_checked,
-                            "num_services_warn": info.num_services_warn,
-                            "num_services_crit": info.num_services_crit,
-                        }
-                else:
-                    if info := core_data_provider.core_services.get(tuple(core_entity)):
+                extra_info: dict[str, Any] = {}
+                if isinstance(core_entity, tuple):
+                    extra_info.update({"hostname": core_entity[0], "service": core_entity[1]})
+                    if service_info := core_data_provider.core_services.get(
+                        (HostName(core_entity[0]), core_entity[1])
+                    ):
                         node.type = NodeType.TOPOLOGY_SERVICE
-                        self._node_extra_info[node_id] = {
-                            "site": info.site,
-                            "hostname": info.hostname,
-                            "service": info.name,
-                            "icon": theme.detect_icon_path(info.icon_image, "icon_")
-                            if info.icon_image
-                            else None,
-                            "state": info.state,
-                        }
+                        extra_info.update(
+                            {
+                                "site": service_info.site,
+                                "icon": (
+                                    theme.detect_icon_path(service_info.icon_image, "icon_")
+                                    if service_info.icon_image
+                                    else None
+                                ),
+                                "state": service_info.state,
+                            }
+                        )
+                    else:
+                        node.type = NodeType.TOPOLOGY_UNKNOWN_SERVICE
+                else:
+                    extra_info.update({"hostname": core_entity})
+                    if host_info := core_data_provider.core_hosts.get(core_entity):
+                        node.type = NodeType.TOPOLOGY_HOST
+                        extra_info.update(
+                            {
+                                "site": host_info.site,
+                                "icon": (
+                                    theme.detect_icon_path(host_info.icon_image, "icon_")
+                                    if host_info.icon_image
+                                    else None
+                                ),
+                                "state": host_info.state,
+                                "has_been_checked": host_info.has_been_checked,
+                                "num_services_warn": host_info.num_services_warn,
+                                "num_services_crit": host_info.num_services_crit,
+                            }
+                        )
+                    else:
+                        node.type = NodeType.TOPOLOGY_UNKNOWN_HOST
+                self._node_extra_info[node_id] = extra_info
 
 
 def _resolve_circular_mesh_depths(
@@ -960,7 +999,7 @@ class Topology:
         self._growth_root_nodes = self._topology_configuration.frontend.growth_root_nodes_set.union(
             self._root_hostnames_from_core
         )
-        self._compare_to_topology: Optional[Topology] = None
+        self._compare_to_topology: Topology | None = None
         ds_config = self._topology_configuration.frontend.datasource_configuration
         used_datasource = enforce_datasource if enforce_datasource else ds_config.reference
         self._computed_layers = self._get_computed_layers(topology_data_dir / used_datasource)
@@ -1003,16 +1042,15 @@ class Topology:
                     data_folder,
                     add_data_root_node=len(active_layer_ids) > 1,
                 )
-            else:
+            elif layer_id.startswith(_dynamic_network_data_id("")):
                 # Create generic class instances for dynamic layers
-                if layer_id.startswith(_dynamic_network_data_id("")):
-                    layer = GenericNetworkDataGenerator(
-                        layer_id.removeprefix("network@"),
-                        self._root_hostnames_from_core,
-                        self._topology_configuration,
-                        data_folder,
-                        add_data_root_node=len(active_layer_ids) > 1,
-                    )
+                layer = GenericNetworkDataGenerator(
+                    layer_id.removeprefix("network@"),
+                    self._root_hostnames_from_core,
+                    self._topology_configuration,
+                    data_folder,
+                    add_data_root_node=len(active_layer_ids) > 1,
+                )
             if layer:
                 computed_layers[layer_id] = layer
             else:
@@ -1252,49 +1290,78 @@ def _compute_growth_settings(
     )
 
 
-def _compute_mesh_links(merged_results: dict[str, TopologyNode]) -> list[TopologyLink]:
-    def link_type(node1: TopologyNode, node2: TopologyNode) -> str:
-        # Unknown nodes are treated as hosts
-        node1_type = (
-            NodeType.TOPOLOGY_HOST if node1.type == NodeType.TOPOLOGY_UNKNOWN else node1.type
-        )
-        node2_type = (
-            NodeType.TOPOLOGY_HOST if node2.type == NodeType.TOPOLOGY_UNKNOWN else node2.type
-        )
-        if node1_type == node2_type:
-            if node1_type == NodeType.TOPOLOGY_HOST:
-                return TopologyLinkType.HOST2HOST.value
-            if node1_type == NodeType.TOPOLOGY_SERVICE:
-                return TopologyLinkType.SERVICE2SERVICE.value
-        if (node1_type == NodeType.TOPOLOGY_SERVICE and node2_type == NodeType.TOPOLOGY_HOST) or (
-            node1_type == NodeType.TOPOLOGY_HOST and node2_type == NodeType.TOPOLOGY_SERVICE
-        ):
-            return TopologyLinkType.HOST2SERVICE.value
-        return TopologyLinkType.DEFAULT.value
+_type_to_base_type = {
+    NodeType.TOPOLOGY_UNKNOWN_HOST: NodeType.TOPOLOGY_HOST,
+    NodeType.TOPOLOGY_UNKNOWN_SERVICE: NodeType.TOPOLOGY_SERVICE,
+    NodeType.TOPOLOGY_UNKNOWN: NodeType.TOPOLOGY_HOST,
+}
 
-    mesh_links: set[TopologyLink] = set()
+
+def _link_type(node1: TopologyNode, node2: TopologyNode) -> str:
+    node1_type = _type_to_base_type.get(node1.type, node1.type)
+    node2_type = _type_to_base_type.get(node2.type, node2.type)
+    if node1_type == node2_type:
+        if node1_type == NodeType.TOPOLOGY_HOST:
+            return TopologyLinkType.HOST2HOST.value
+        if node1_type == NodeType.TOPOLOGY_SERVICE:
+            return TopologyLinkType.SERVICE2SERVICE.value
+    if (node1_type == NodeType.TOPOLOGY_SERVICE and node2_type == NodeType.TOPOLOGY_HOST) or (
+        node1_type == NodeType.TOPOLOGY_HOST and node2_type == NodeType.TOPOLOGY_SERVICE
+    ):
+        return TopologyLinkType.HOST2SERVICE.value
+    return TopologyLinkType.DEFAULT.value
+
+
+def _get_link_config(
+    start_node: TopologyNode,
+    end_node: TopologyNode,
+    computed_layers: dict[str, ABCTopologyNodeDataGenerator],
+) -> dict[str, Any]:
+    config = {"type": _link_type(start_node, end_node)}
+    # Add/Merge link metadata from all involved layers
+    for layer in computed_layers.values():
+        if link_metadata := layer.link_metadata.get((start_node.id, end_node.id)):
+            config.update(link_metadata)
+    return config
+
+
+def _compute_mesh_links(topology: Topology) -> list[TopologyLink]:
+    merged_results: dict[str, TopologyNode] = topology.merged_results
+    computed_layers: dict[str, ABCTopologyNodeDataGenerator] = topology.computed_layers
+    mesh_links: dict[int, TopologyLink] = {}
+
+    def add_mesh_link(link: TopologyLink) -> None:
+        # Ensure that only one link is specified, but merged configurations of duplicate links
+        if existing_link := mesh_links.get(hash(link)):
+            existing_link.config.update(link.config)
+        else:
+            mesh_links[hash(link)] = link
+
     for node_id, node in list(merged_results.items()):
         for incoming_node_id in node.incoming:
             if incoming_node_id not in merged_results:
                 continue
-            mesh_links.add(
-                TopologyLink(
-                    incoming_node_id,
-                    node_id,
-                    {"type": link_type(node, merged_results[incoming_node_id])},
-                )
+            new_link = TopologyLink(
+                incoming_node_id,
+                node_id,
             )
+            new_link.config = _get_link_config(
+                node, merged_results[incoming_node_id], computed_layers
+            )
+            add_mesh_link(new_link)
         for outgoing_node_id in node.outgoing:
             if outgoing_node_id not in merged_results:
                 continue
-            mesh_links.add(
-                TopologyLink(
-                    node_id,
-                    outgoing_node_id,
-                    {"type": link_type(node, merged_results[outgoing_node_id])},
-                )
+            new_link = TopologyLink(
+                node_id,
+                outgoing_node_id,
             )
-    return list(mesh_links)
+            new_link.config = _get_link_config(
+                node, merged_results[outgoing_node_id], computed_layers
+            )
+            add_mesh_link(new_link)
+
+    return list(mesh_links.values())
 
 
 class TopologyLayerRegistry(cmk.utils.plugin_registry.Registry[type[ABCTopologyNodeDataGenerator]]):
@@ -1349,12 +1416,13 @@ def _register_builtin_views():
                 "sort_index": 99,
                 "is_show_more": False,
                 "packaged": False,
+                "megamenu_search_terms": [],
             },
             "topology_hover_host": {
                 "browser_reload": 0,
                 "column_headers": "pergroup",
                 "datasource": "hosts",
-                "description": _l("Host hover menu shown in topolgoy visualization"),
+                "description": _l("Host hover menu shown in topology visualization"),
                 "hidden": True,
                 "hidebutton": True,
                 "group_painters": [],
@@ -1389,6 +1457,7 @@ def _register_builtin_views():
                 "sort_index": 99,
                 "is_show_more": False,
                 "packaged": False,
+                "megamenu_search_terms": [],
             },
             "topology_hover_service": {
                 "add_context_to_title": True,
@@ -1432,6 +1501,7 @@ def _register_builtin_views():
                 "title": "Service",
                 "topic": "other",
                 "user_sortable": True,
+                "megamenu_search_terms": [],
             },
         }
     )
@@ -1524,7 +1594,7 @@ def get_topology_configuration(
     query_identifier = TopologyQueryIdentifier(topology_type, filter_configuration)
     serialized_settings = _get_topology_config_for_query(query_identifier)
     if serialized_settings:
-        topology_configuration = TopologyConfiguration.parse(serialized_settings)
+        topology_configuration = TopologyConfiguration.parse(serialized_settings, query_identifier)
         # Since we do not save the available_overlays in the settings we have to add them
         topology_configuration.frontend.overlays_config.available_layers = (
             default_overlays.available_layers
@@ -1683,13 +1753,15 @@ def _compute_topology_response(topology_configuration: TopologyConfiguration) ->
     ds_config = topology_configuration.frontend.datasource_configuration
     reference = Topology(topology_configuration, ds_config.reference)
 
-    link_config: dict[TopologyLink, dict[str, Any]] = {}
+    link_config_comparison: dict[TopologyLink, dict[str, Any]] = {}
     if ds_config.reference != ds_config.compare_to:
         compare_to = Topology(topology_configuration, ds_config.compare_to)
         # Compute link_config, will be used later on
-        ref_mesh_links = _compute_mesh_links(reference.merged_results)
-        compare_mesh_links = _compute_mesh_links(compare_to.merged_results)
-        link_config = _compute_link_config_for_comparison(ref_mesh_links, compare_mesh_links)
+        ref_mesh_links = _compute_mesh_links(reference)
+        compare_mesh_links = _compute_mesh_links(compare_to)
+        link_config_comparison = _compute_link_config_for_comparison(
+            ref_mesh_links, compare_mesh_links
+        )
         _integrate_node_changes_in_reference(reference, compare_to)
     else:
         # Always reset classes used in frontend
@@ -1698,11 +1770,8 @@ def _compute_topology_response(topology_configuration: TopologyConfiguration) ->
 
     result = _compute_topology_result(
         topology_configuration,
-        reference.computed_layers,
-        reference.merged_results,
-        reference.node_specific_infos,
-        reference.growth_root_nodes,
-        link_config,
+        reference,
+        link_config_comparison,
     )
 
     # import pprint
@@ -1730,12 +1799,14 @@ def _compute_link_config_for_comparison(
 
 def _compute_topology_result(
     topology_configuration: TopologyConfiguration,
-    active_layers: dict[str, ABCTopologyNodeDataGenerator],
-    merged_results: TopologyNodes,
-    node_specific_infos: dict[str, Any],
-    growth_root_nodes: set[str],
-    link_config: dict[TopologyLink, dict[str, Any]],
+    topology: Topology,
+    link_config_comparison: dict[TopologyLink, dict[str, Any]],
 ) -> TopologyResponse:
+    active_layers: dict[str, ABCTopologyNodeDataGenerator] = topology.computed_layers
+    merged_results: TopologyNodes = topology.merged_results
+    node_specific_infos: dict[str, Any] = topology.node_specific_infos
+    growth_root_nodes: set[str] = topology.growth_root_nodes
+
     headline = _("Topology for ") + ", ".join(layer.name() for layer in active_layers.values())
 
     if len(merged_results) > topology_configuration.filter.max_nodes:
@@ -1748,21 +1819,21 @@ def _compute_topology_result(
         growth_root_nodes,
     )
 
-    # Reduced mesh links without references
-    mesh_links = _compute_mesh_links(merged_results)
+    # Reduce mesh links without references
+    mesh_links = _compute_mesh_links(topology)
 
     def mesh_link_visible(link: TopologyLink) -> bool:
         return link.source in assigned_node_ids and link.target in assigned_node_ids
 
     shown_mesh_links = list(filter(mesh_link_visible, mesh_links))
     for link in shown_mesh_links:
-        if config := link_config.get(link):
-            topology_config = config
+        if config := link_config_comparison.get(link):
+            comparison_config = config
         else:
-            topology_config = {
+            comparison_config = {
                 "topology_classes": [["only_in_ref", False], ["missing_in_ref", False]]
             }
-        link.config.update(topology_config)
+        link.config.update(comparison_config)
 
     frontend_config = NodeConfig(topology_center, shown_mesh_links)
 

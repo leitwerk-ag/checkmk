@@ -84,7 +84,11 @@ class CreateServiceComment(CreateServiceCommentBase):
 
 
 class CreateServiceQueryComment(CreateServiceCommentBase):
-    query = gui_fields.query_field(tables.Services, required=True)
+    query = gui_fields.query_field(
+        tables.Services,
+        required=True,
+        example='{"op": "=", "left": "description", "right": "Service description"}',
+    )
 
 
 class CreateServiceRelatedComment(OneOfSchema):
@@ -119,10 +123,9 @@ class DeleteCommentById(BaseBulkDelete):
 
 
 class DeleteCommentsByQuery(BaseBulkDelete):
-    query = gui_fields.query_field(tables.Comments)
-
-    site_id = gui_fields.SiteField(
-        description="The ID of an existing site", example="production", required=True
+    query = gui_fields.query_field(
+        tables.Comments,
+        example='{"op": "=", "left": "host_name", "right": "example.com"}',
     )
 
 
@@ -139,10 +142,6 @@ class DeleteCommentsByParams(BaseBulkDelete):
         "removed. If a service has multiple comments then all will be removed",
         required=False,
         example=["CPU load", "Memory"],
-    )
-
-    site_id = gui_fields.SiteField(
-        description="The ID of an existing site", example="production", required=True
     )
 
 

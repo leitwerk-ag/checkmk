@@ -170,12 +170,14 @@ def configure_attributes(  # pylint: disable=too-many-branches
 
             if attr.show_inherited_value():
                 if for_what in ["host", "cluster"]:
-                    url = folder_from_request().edit_url()
+                    url = folder_from_request(
+                        request.var("folder"), request.get_ascii_input("host")
+                    ).edit_url()
 
                 container = parent  # container is of type Folder
                 while container:
-                    assert not isinstance(container, SearchFolder)
                     if attrname in container.attributes:
+                        assert not isinstance(container, SearchFolder)
                         url = container.edit_url()
                         inherited_from = escape_to_html(_("Inherited from ")) + HTMLWriter.render_a(
                             container.title(), href=url
@@ -318,6 +320,7 @@ def configure_attributes(  # pylint: disable=too-many-branches
 
             # in bulk mode we show inheritance only if *all* hosts inherit
             explanation: HTML = HTML("")
+            value: object = None
             if for_what == "bulk":
                 if num_haveit == 0:
                     assert inherited_from is not None

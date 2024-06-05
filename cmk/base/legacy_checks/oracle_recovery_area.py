@@ -13,8 +13,7 @@
 from cmk.base.check_api import LegacyCheckDefinition
 from cmk.base.config import check_info
 
-from cmk.agent_based.v2 import IgnoreResultsError, render
-from cmk.agent_based.v2.type_defs import StringTable
+from cmk.agent_based.v2 import IgnoreResultsError, render, StringTable
 
 
 def inventory_oracle_recovery_area(info):
@@ -23,6 +22,8 @@ def inventory_oracle_recovery_area(info):
 
 def check_oracle_recovery_area(item, params, info):
     for line in info:
+        if len(line) < 5:
+            continue
         if line[0] == item:
             size_mb, used_mb, reclaimable_mb = map(int, line[2:5])
             if size_mb == 0:

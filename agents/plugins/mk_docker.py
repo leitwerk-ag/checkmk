@@ -3,7 +3,7 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
-r"""Check_MK Agent Plugin: mk_docker.py
+r"""Check_MK Agent Plug-in: mk_docker.py
 
 This plugin is configured using an ini-style configuration file,
 i.e. a file with lines of the form 'key: value'.
@@ -44,28 +44,17 @@ def which(prg):
 
 
 # The "import docker" checks below result in agent sections being created. This
-# is a way to end the plugin in case it is being executed on a non docker or podman host
-if os.path.isdir("/var/lib/docker") and os.path.isdir("/var/run/docker") and which("docker"):
-    DEFAULT_CFG_SECTION = {
-        "base_url": "unix://var/run/docker.sock",
-        "skip_sections": "",
-        "container_id": "short",
-    }
-
-# Use podman CFG_SECTION
-elif os.path.isfile("/usr/bin/runc") and which("podman"):
-    DEFAULT_CFG_SECTION = {
-        "base_url": "unix://run/podman/podman.sock",
-        "skip_sections": "",
-        "container_id": "short",
-    }
-
-else:
-    sys.stderr.write("mk_docker.py: Does not seem to be a docker or podman host. Terminating.\n")
+# is a way to end the plugin in case it is being executed on a non docker host
+if (
+    not os.path.isfile("/var/lib/docker")
+    and not os.path.isfile("/var/run/docker")
+    and not which("docker")
+):
+    sys.stderr.write("mk_docker.py: Does not seem to be a docker host. Terminating.\n")
     sys.exit(1)
 
 try:
-    import docker  # type: ignore[import]
+    import docker  # type: ignore[import-untyped]
 except ImportError:
     sys.stdout.write(
         "<<<docker_node_info:sep(124)>>>\n"
@@ -91,6 +80,12 @@ DEBUG = "--debug" in sys.argv[1:]
 VERSION = "0.1"
 
 DEFAULT_CFG_FILE = os.path.join(os.getenv("MK_CONFDIR", ""), "docker.cfg")
+
+DEFAULT_CFG_SECTION = {
+    "base_url": "unix://var/run/docker.sock",
+    "skip_sections": "",
+    "container_id": "short",
+}
 
 LOGGER = logging.getLogger(__name__)
 
@@ -182,7 +177,7 @@ class Section(list):
 
 def report_exception_to_server(exc, location):
     LOGGER.info("handling exception: %s", exc)
-    msg = "Plugin exception in %s: %s" % (location, exc)
+    msg = "Plug-in exception in %s: %s" % (location, exc)
     sec = Section("docker_node_info")
     sec.append(json.dumps({"Unknown": msg}))
     sec.write()
@@ -267,7 +262,7 @@ class ParallelDfCall:
             return json.loads(file_.read())
 
 
-class MKDockerClient(docker.DockerClient):
+class MKDockerClient(docker.DockerClient):  # type: ignore[misc]
     """a docker.DockerClient that caches containers and node info"""
 
     API_VERSION = "auto"

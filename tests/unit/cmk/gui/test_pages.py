@@ -230,6 +230,9 @@ def test_registered_pages() -> None:
             "download_robotmk_suite_report",
         ]
 
+    if cmk_version.edition() is cmk_version.Edition.CSE:
+        expected_pages += ["ajax_saas_onboarding_button_toggle"]
+
     # TODO: Depending on how we call the test (single test or whole package) we
     # see this page or we don't...
     actual_set = {p for p in cmk.gui.pages.page_registry.keys() if p != "switch_customer"}  #
@@ -241,22 +244,6 @@ def test_registered_pages() -> None:
         sys.stdout.write("Expected but missing: %s\n" % ", ".join(expected_set - actual_set))
         sys.stdout.write("Unknown new pages: %s\n" % ", ".join(actual_set - expected_set))
     assert len(differences) == 0
-
-
-def test_pages_register(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(cmk.gui.pages, "page_registry", cmk.gui.pages.PageRegistry())
-
-    @cmk.gui.pages.register("123handler")
-    def page_handler():  # pylint: disable=unused-variable
-        sys.stdout.write("123")
-
-    handler = cmk.gui.pages.get_page_handler("123handler")
-    assert callable(handler)
-
-    handler()
-    assert capsys.readouterr()[0] == "123"
 
 
 @pytest.mark.usefixtures("monkeypatch")

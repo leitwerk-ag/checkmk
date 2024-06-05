@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+# Copyright (C) 2024 Checkmk GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -9,6 +13,7 @@ from tests.testlib.agent import (
     clean_agent_controller,
     download_and_install_agent_package,
     register_controller,
+    wait_for_agent_cache_omd_status,
     wait_until_host_receives_data,
 )
 from tests.testlib.site import Site
@@ -44,6 +49,7 @@ def _host_services(site: Site, agent_ctl: Path) -> Iterator[dict[str, ServiceInf
     try:
         register_controller(agent_ctl, site, hostname, site_address="127.0.0.1")
         wait_until_host_receives_data(site, hostname)
+        wait_for_agent_cache_omd_status(site)
         site.openapi.bulk_discover_services_and_wait_for_completion([str(hostname)])
         site.openapi.activate_changes_and_wait_for_completion()
         site.reschedule_services(hostname)

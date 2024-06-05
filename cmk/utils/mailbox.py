@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# pylint: disable=protected-access
+
 """Common module for mail related active checks
 Current responsibilities include:
 * common active check error output
@@ -36,7 +38,11 @@ from email.message import Message as POPIMAPMessage
 from typing import Any, Literal
 
 import urllib3
-from exchangelib import (  # type: ignore[import]
+
+# Isort messes with the type annotation and creates a unused-ignore for the
+# OAUTH2 and OAuth2Credentials imports.
+# isort: off
+from exchangelib import (  # type: ignore[import-untyped]
     Account,
     Configuration,
     Credentials,
@@ -48,8 +54,10 @@ from exchangelib import (  # type: ignore[import]
     IMPERSONATION,
 )
 from exchangelib import Message as EWSMessage
-from exchangelib import OAUTH2, OAuth2Credentials  # type: ignore[import]
+from exchangelib import OAUTH2, OAuth2Credentials
 from exchangelib import protocol as ews_protocol
+
+# isort: on
 
 import cmk.utils.password_store
 
@@ -245,7 +253,7 @@ def extract_folder_names(folder_list: Iterable[bytes]) -> Iterable[str]:
         for mb in mb_list
         for match in (pattern.search(mb),)
         if match is not None
-    ]  #  #  #
+    ]
 
 
 def verified_result(data: tuple[bytes | str, list[bytes | str]] | bytes) -> list[bytes | str]:
@@ -494,13 +502,13 @@ class Mailbox:
                 return {
                     num: msg
                     for num, msg in _fetch_mails_pop3().items()
-                    if matches(msg.get("Subject"), pattern)  # type: ignore[attr-defined]
+                    if matches(msg.get("Subject"), pattern)
                 }
             if protocol == "IMAP":
                 return {
                     num: msg
                     for num, msg in _fetch_mails_imap().items()
-                    if matches(msg.get("Subject"), pattern)  # type: ignore[attr-defined]
+                    if matches(msg.get("Subject"), pattern)
                 }
             if protocol == "EWS":
                 return {
@@ -546,7 +554,7 @@ class Mailbox:
         def format_date(timestamp: float) -> str:
             return time.strftime("%d-%b-%Y", time.gmtime(timestamp))
 
-        def fetch_timestamp(mail_id: str) -> int:
+        def fetch_timestamp(mail_id: str | bytes) -> int:
             # Alternative, more flexible but slower implementation using <DATE> rather than
             # <INTERNALDATE> - maybe we should make this selectable
             # msg = self._mailbox.fetch(mail_id, "(RFC822)")[1]
@@ -590,7 +598,6 @@ class Mailbox:
             [
                 date
                 for mail_id in ids[0].split()
-                if isinstance(mail_id, str)
                 for date in (fetch_timestamp(mail_id),)
                 if before is None or date <= before
             ]
@@ -601,6 +608,9 @@ class Mailbox:
     def delete_mails(self, mails: MailMessages) -> None:
         """Delete mails specified by @mails. Please note that for POP/IMAP we delete mails by
         index (mail.keys()) while with EWS we delete sets of EWSMessage (mail.values())"""
+        if not mails:
+            logging.debug("delete mails: no mails given")
+            return
         assert self._connection is not None
         logging.debug("delete mails %s", mails)
         try:
@@ -621,6 +631,9 @@ class Mailbox:
             raise CleanupMailboxError("Failed to delete mail: %r" % exc) from exc
 
     def copy_mails(self, mails: MailMessages, folder: str) -> None:
+        if not mails:
+            logging.debug("copy mails: no mails given")
+            return
         protocol = self.protocol()
         assert self._connection and protocol in {"IMAP", "EWS"}
         # The user wants the message to be moved to the folder
@@ -845,9 +858,11 @@ def parse_arguments(parser: argparse.ArgumentParser, argv: Sequence[str]) -> Arg
     args.fetch_port = args.fetch_port or (
         (995 if args.fetch_tls else 110)
         if args.fetch_protocol == "POP3"
-        else (993 if args.fetch_tls else 143)
-        if args.fetch_protocol == "IMAP"
-        else (443 if args.fetch_tls else 80)
+        else (
+            (993 if args.fetch_tls else 143)
+            if args.fetch_protocol == "IMAP"
+            else (443 if args.fetch_tls else 80)
+        )
     )  # HTTP / REST (e.g. EWS)
 
     if "send_protocol" in args:  # if sending is configured
@@ -872,9 +887,11 @@ def _active_check_main_core(
     # todo argparse - exceptions?
     args = parse_arguments(argument_parser, argv)
     logging.basicConfig(
-        level={0: logging.WARN, 1: logging.INFO, 2: logging.DEBUG}.get(args.verbose, logging.DEBUG)
-        if args.debug or args.verbose > 0
-        else logging.CRITICAL
+        level=(
+            {0: logging.WARN, 1: logging.INFO, 2: logging.DEBUG}.get(args.verbose, logging.DEBUG)
+            if args.debug or args.verbose > 0
+            else logging.CRITICAL
+        )
     )
 
     # when we disable certificate validation intensionally we don't want to see warnings

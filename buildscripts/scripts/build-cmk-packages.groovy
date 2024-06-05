@@ -43,9 +43,7 @@ def main() {
 
     shout("configure");
 
-    /// don't add $WORKSPACE based values here, since $docker_args is being
-    /// used on different nodes
-    def docker_args = "${mount_reference_repo_dir} --ulimit nofile=1024:1024";
+    def bazel_log_prefix = "bazel_log_"
 
     def (jenkins_base_folder, use_case, omd_env_vars, upload_path_suffix) = (
         env.JOB_BASE_NAME == "testbuild" ? [
@@ -53,7 +51,7 @@ def main() {
             "testbuild",
             /// Testbuilds: Do not use our build cache to ensure we catch build related
             /// issues. And disable python optimizations to execute the build faster
-            ["NEXUS_BUILD_CACHE_URL=", "PYTHON_ENABLE_OPTIMIZATIONS="],
+            ["NEXUS_BUILD_CACHE_URL="],
             "testbuild/",
         ] : [
             new File(new File(currentBuild.fullProjectName).parent).parent,
@@ -62,7 +60,8 @@ def main() {
             "",
         ]);
 
-    def distros = versioning.configured_or_overridden_distros(edition, OVERRIDE_DISTROS, use_case);
+    def all_distros = versioning.get_distros(override: "all");
+    def distros = versioning.get_distros(edition: edition, use_case: use_case, override: OVERRIDE_DISTROS);
 
     def deploy_to_website = !params.SKIP_DEPLOY_TO_WEBSITE && !jenkins_base_folder.startsWith("Testing");
 
@@ -85,6 +84,7 @@ def main() {
         """
         |===== CONFIGURATION ===============================
         |distros:.................. │${distros}│
+        |all_distros:.............. │${all_distros}│
         |deploy_to_website:........ │${deploy_to_website}│
         |branch_name:.............. │${branch_name}│
         |cmk_version:.............. │${cmk_version}│
@@ -113,7 +113,7 @@ def main() {
     if (params.DEPLOY_TO_WEBSITE_ONLY) {
         // This stage is used only by bauwelt/bw-release in order to publish an already built release
         stage('Deploying previously build version to website only') {
-            docker_image_from_alias("IMAGE_TESTING").inside(docker_args) {
+            inside_container(ulimit_nofile: 1024) {
                 artifacts_helper.deploy_to_website(cmk_version_rc_aware);
                 artifacts_helper.cleanup_rc_candidates_of_version(cmk_version_rc_aware);
             }
@@ -125,7 +125,8 @@ def main() {
     stage("Cleanup") {
         cleanup_directory("${WORKSPACE}/versions");
         cleanup_directory("${WORKSPACE}/agents");
-        docker_image_from_alias("IMAGE_TESTING").inside(docker_args) {
+        sh("rm -rf ${WORKSPACE}/${bazel_log_prefix}*");
+        inside_container(ulimit_nofile: 1024) {
             dir("${checkout_dir}") {
                 sh("make buildclean");
                 versioning.configure_checkout_folder(EDITION, cmk_version);
@@ -140,10 +141,12 @@ def main() {
     ///       https://review.lan.tribe29.com/c/check_mk/+/34634
     ///       Anyway this whole upload/download mayhem hopfully evaporates with
     ///       bazel..
-    shout("pull packages");
-    docker.withRegistry(DOCKER_REGISTRY, 'nexus') {
-        distros.each { distro ->
-            docker.image("${distro}:${docker_tag}").pull();
+    shout("pull build images");
+    stage("Pull build images") {
+        docker.withRegistry(DOCKER_REGISTRY, 'nexus') {
+            distros.each { distro ->
+                docker.image("${distro}:${docker_tag}").pull();
+            }
         }
     }
 
@@ -173,11 +176,12 @@ def main() {
                     } else {
                         /// must take place in $WORKSPACE since we need to
                         /// access $WORKSPACE/agents
-                        docker.withRegistry(DOCKER_REGISTRY, 'nexus') {
-                            docker_image_from_alias("IMAGE_TESTING").inside(
-                                "${docker_args} --group-add=${docker_group_id} -v /var/run/docker.sock:/var/run/docker.sock") {
-                                build_linux_agent_updater(agent, EDITION, branch_version, docker_registry_no_http);
-                            }
+                        inside_container(
+                            set_docker_group_id: true,
+                            ulimit_nofile: 1024,
+                            priviliged: true,
+                        ) {
+                            build_linux_agent_updater(agent, EDITION, branch_version, docker_registry_no_http);
                         }
                     }
                 }
@@ -195,7 +199,7 @@ def main() {
     }
 
     shout("create_source_package");
-    docker_image_from_alias("IMAGE_TESTING").inside("${mount_reference_repo_dir} --ulimit nofile=2048:2048") {
+    inside_container(ulimit_nofile: 2048) {
         // TODO creates stages
         create_source_package(WORKSPACE, checkout_dir, cmk_version);
 
@@ -230,8 +234,17 @@ def main() {
     }
 
     shout("packages");
-    def package_builds = distros.collectEntries { distro ->
+    def package_builds = all_distros.collectEntries { distro ->
         [("distro ${distro}") : {
+            if (! (distro in distros)) {
+                conditional_stage("${distro} initialize workspace", false) {}
+                conditional_stage("${distro} build package", false) {}
+                conditional_stage("${distro} sign package", false) {}
+                conditional_stage("${distro} test package", false) {}
+                conditional_stage("${distro} copy package", false) {}
+                conditional_stage("${distro} upload package", false) {}
+                return;
+            }
             // The following node call allocates a new workspace for each
             // DISTRO.
             //
@@ -258,15 +271,22 @@ def main() {
                         // For the package build we need a higher ulimit
                         // * Bazel opens many files which can lead to crashes
                         // * See CMK-12159
-                        docker.image("${distro}:${docker_tag}").inside(
-                                /* groovylint-disable LineLength */
-                                "${mount_reference_repo_dir} --ulimit nofile=16384:32768 -v ${checkout_dir}:${checkout_dir}:ro --hostname ${distro} --init") {
-                                /* groovylint-enable LineLength */
+                        inside_container(
+                            image: docker.image("${distro}:${docker_tag}"),
+                            args: [
+                                "--ulimit nofile=16384:32768",
+                                "-v ${checkout_dir}:${checkout_dir}:ro",
+                                "--hostname ${distro}",
+                            ],
+                            init: true,
+                        ) {
                             stage("${distro} initialize workspace") {
                                 cleanup_directory("${WORKSPACE}/versions");
                                 sh("rm -rf ${distro_dir}");
                                 sh("rsync -a ${checkout_dir}/ ${distro_dir}/");
+                                sh("rm -rf ${distro_dir}/bazel_execution_log*");
                             }
+
                             stage("${distro} build package") {
                                 withCredentials([
                                     usernamePassword(
@@ -282,16 +302,22 @@ def main() {
                                     versioning.print_image_tag();
                                     build_package(distro_package_type(distro), distro_dir, omd_env_vars);
                                 }
+
+                                sh("""echo ==== ${distro} =====
+                                ps wauxw
+                                """)
+
+                                try_parse_bazel_execution_log(distro, distro_dir, bazel_log_prefix)
                             }
-                            sh("""echo ==== ${distro} =====
-                            ps wauxw
-                            """)
                         }
                     }
                 }
-
-                docker_image_from_alias("IMAGE_TESTING").inside(
-                        "${docker_args} -v ${checkout_dir}:${checkout_dir}:ro") {
+                inside_container(
+                    args: [
+                        "-v ${checkout_dir}:${checkout_dir}:ro",
+                    ],
+                    ulimit_nofile: 1024,
+                ) {
                     def package_name = get_package_name(distro_dir, distro_package_type(distro), EDITION, cmk_version);
                     def build_package_path = "${distro_dir}/${package_name}";
                     def node_version_dir = "${WORKSPACE}/versions";
@@ -324,31 +350,87 @@ def main() {
     }
     parallel package_builds;
 
+    stage("Plot cache hits") {
+        try_plot_cache_hits(bazel_log_prefix, distros);
+    }
+
     conditional_stage('Upload', !jenkins_base_folder.startsWith("Testing")) {
         currentBuild.description += (
             """ |${currentBuild.description}<br>
                 |<p><a href='${INTERNAL_DEPLOY_URL}/${upload_path_suffix}${cmk_version}'>Download Artifacts</a></p>
                 |""".stripMargin());
-        def exclude_pattern = versioning.get_internal_distros_pattern();
-        docker.withRegistry(DOCKER_REGISTRY, 'nexus') {
-            docker_image_from_alias("IMAGE_TESTING").inside("${docker_args} ${mount_reference_repo_dir}") {
-                assert_no_dirty_files(checkout_dir);
-                artifacts_helper.download_version_dir(
-                    upload_path,
-                    INTERNAL_DEPLOY_PORT,
-                    cmk_version_rc_aware,
-                    "${WORKSPACE}/versions/${cmk_version_rc_aware}",
-                    "*",
-                    "all packages",
-                    exclude_pattern,
-                );
-                artifacts_helper.upload_version_dir(
-                    "${WORKSPACE}/versions/${cmk_version_rc_aware}", WEB_DEPLOY_DEST, WEB_DEPLOY_PORT, EXCLUDE_PATTERN=exclude_pattern);
-                if (deploy_to_website) {
-                    artifacts_helper.deploy_to_website(cmk_version_rc_aware);
-                }
+        def exclude_pattern = versioning.get_internal_artifacts_pattern();
+        inside_container(ulimit_nofile: 1024) {
+            assert_no_dirty_files(checkout_dir);
+            artifacts_helper.download_version_dir(
+                upload_path,
+                INTERNAL_DEPLOY_PORT,
+                cmk_version_rc_aware,
+                "${WORKSPACE}/versions/${cmk_version_rc_aware}",
+                "*",
+                "all packages",
+                exclude_pattern,
+            );
+            artifacts_helper.upload_version_dir(
+                "${WORKSPACE}/versions/${cmk_version_rc_aware}", WEB_DEPLOY_DEST, WEB_DEPLOY_PORT, EXCLUDE_PATTERN=exclude_pattern);
+            if (deploy_to_website) {
+                artifacts_helper.deploy_to_website(cmk_version_rc_aware);
             }
         }
+    }
+}
+
+def try_parse_bazel_execution_log(distro, distro_dir, bazel_log_prefix) {
+    try {
+        dir("${distro_dir}") {
+            def summary_file="${distro_dir}/${bazel_log_prefix}execution_summary_${distro}.json";
+            def cache_hits_file="${distro_dir}/${bazel_log_prefix}cache_hits_${distro}.csv";
+            sh("""python3 \
+            buildscripts/scripts/bazel_execution_log_parser.py \
+            --execution_logs_root "${distro_dir}" \
+            --bazel_log_file_pattern "bazel_execution_log*" \
+            --summary_file "${summary_file}" \
+            --cachehit_csv "${cache_hits_file}" \
+            --distro "${distro}"
+        """);
+            stash(name: "${bazel_log_prefix}${distro}", includes: "${bazel_log_prefix}*")
+        }
+    } catch (Exception e) {
+        print("Failed to parse bazel execution logs: ${e}");
+    }
+}
+
+def try_plot_cache_hits(bazel_log_prefix, distros) {
+    try {
+        distros.each { distro ->
+            try {
+                print("Unstashing for distro ${distro}...")
+                unstash(name: "${bazel_log_prefix}${distro}")
+            }
+            catch (Exception e) {
+                print("No stash for ${distro}")
+            }
+        }
+
+        plot csvFileName: 'bazel_cache_hits.csv',
+            csvSeries:
+                distros.collect {[file: "${bazel_log_prefix}cache_hits_${it}.csv"]},
+            description: 'Bazel Remote Cache Analysis',
+            group: 'Bazel Cache',
+            numBuilds: '30',
+            propertiesSeries: [[file: '', label: '']],
+            style: 'line',
+            title: 'Cache hits',
+            yaxis: 'Cache hits in percent',
+            yaxisMaximum: '100',
+            yaxisMinimum: '0'
+
+        archiveArtifacts(
+           artifacts: "${bazel_log_prefix}*",
+        )
+    }
+    catch (Exception e) {
+        print("Failed to plot cache hits: ${e}");
     }
 }
 
@@ -412,7 +494,10 @@ def create_and_upload_bom(workspace, branch_version, version) {
         }
         stage('Create BOM') {
             on_dry_run_omit(LONG_RUNNING, "Create BOM") {
-                scanner_image.inside("-v ${checkout_dir}:${checkout_dir}") {
+                inside_container(
+                    image: scanner_image,
+                    args: ["-v ${checkout_dir}:${checkout_dir}"], // why?!
+                ) {
                     sh("""python3 -m dependencyscanner \
                     --stage prod \
                     --outfile '${bom_path}' \
@@ -428,7 +513,13 @@ def create_and_upload_bom(workspace, branch_version, version) {
                     variable: 'DTRACK_API_KEY')]) {
                 withEnv(["DTRACK_URL=${DTRACK_URL}"]) {
                     on_dry_run_omit(LONG_RUNNING, "Upload BOM") {
-                        scanner_image.inside("-v ${checkout_dir}:${checkout_dir} --env DTRACK_URL,DTRACK_API_KEY") {
+                        inside_container(
+                            image: scanner_image,
+                            args: [
+                                "-v ${checkout_dir}:${checkout_dir}", // why?!
+                                "--env DTRACK_URL,DTRACK_API_KEY",
+                            ],
+                        ) {
                             sh("""scripts/upload-bom \
                             --bom-path '${bom_path}' \
                             --project-name 'Checkmk ${branch_version}' \
@@ -501,7 +592,7 @@ def create_source_package(workspace, source_dir, cmk_version) {
                     passwordVariable: 'NEXUS_PASSWORD',
                     usernameVariable: 'NEXUS_USERNAME')
             ]) {
-                sh('make dist || cat /root/.npm/_logs/*-debug.log');
+                sh('make dist');
             }
         }
     }
@@ -531,7 +622,7 @@ def build_package(package_type, build_dir, env) {
     dir(build_dir) {
         // TODO: THIS MUST GO AWAY ASAP
         // Backgroud:
-        // * currently we're building protobuf during source packaging (make dist) in IMAGE_TESTING.
+        // * currently we're building protobuf during source packaging (make dist) in reference container.
         // * then, we're simply rsyncing the whole workspace in the different distro workspaces (including the protoc)
         // * as protobuf exists then in the intermediate_install, it will be used (and not obtained from a correct
         //   cache key, including DISTRO information...)
@@ -553,9 +644,6 @@ def build_package(package_type, build_dir, env) {
                 bazel info peak-heap-size
                 echo 'Server log:'
                 cat \$(bazel info server_log)
-                echo '### PROCESSES ###'
-                ps -axjf
-                bazel shutdown
             """);
         }
     }

@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# pylint: disable=protected-access
+
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -700,7 +702,7 @@ service_label_ruleset: Sequence[RuleSpec[str]] = [
 @pytest.mark.parametrize(
     "hostname,service_description,expected_result",
     [
-        # Funny service description because the plugin isn't loaded.
+        # Funny service description because the plug-in isn't loaded.
         # We could patch config.service_description, but this is easier:
         (
             HostName("host1"),

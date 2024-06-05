@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# pylint: disable=protected-access
+
 from typing import Any, Literal
 
 import pytest
@@ -18,13 +20,16 @@ import cmk.gui.plugins.views
 import cmk.gui.views
 from cmk.gui.config import active_config
 from cmk.gui.data_source import ABCDataSource, RowTable
+from cmk.gui.display_options import display_options
 from cmk.gui.exporter import exporter_registry
-from cmk.gui.http import request
+from cmk.gui.http import request, response
 from cmk.gui.logged_in import user
 from cmk.gui.painter.v0 import base as painter_base
 from cmk.gui.painter.v0.base import Cell, Painter, painter_registry, PainterRegistry
-from cmk.gui.painter_options import painter_option_registry
+from cmk.gui.painter.v0.helpers import RenderLink
+from cmk.gui.painter_options import painter_option_registry, PainterOptions
 from cmk.gui.type_defs import ColumnSpec, SorterSpec
+from cmk.gui.utils.theme import theme
 from cmk.gui.valuespec import ValueSpec
 from cmk.gui.view import View
 from cmk.gui.views import command
@@ -37,7 +42,7 @@ from cmk.gui.views.page_show_view import get_limit
 from cmk.gui.views.store import multisite_builtin_views
 
 
-def test_registered_painter_options() -> None:
+def test_registered_painter_options(request_context: None) -> None:
     expected = [
         "aggr_expand",
         "aggr_onlyproblems",
@@ -277,7 +282,7 @@ def test_registered_commands() -> None:
                 "edit_downtimes": {
                     "permission": "action.downtimes",
                     "tables": ["downtime"],
-                    "title": "Edit Downtimes",
+                    "title": "Edit downtimes",
                 },
             }
         )
@@ -320,7 +325,17 @@ def test_legacy_register_command(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_painter_export_title(monkeypatch: pytest.MonkeyPatch, view: View) -> None:
-    painters: list[Painter] = [painter_class() for painter_class in painter_registry.values()]
+    painters: list[Painter] = [
+        painter_class(
+            user=user,
+            config=active_config,
+            request=request,
+            painter_options=PainterOptions.get_instance(),
+            theme=theme,
+            url_renderer=RenderLink(request, response, display_options),
+        )
+        for painter_class in painter_registry.values()
+    ]
     painters_and_cells: list[tuple[Painter, Cell]] = [
         (painter, Cell(ColumnSpec(name=painter.ident), None)) for painter in painters
     ]
@@ -358,7 +373,14 @@ def test_legacy_register_painter(monkeypatch: pytest.MonkeyPatch, view: View) ->
         },
     )
 
-    painter = painter_base.painter_registry["abc"]()
+    painter = painter_base.painter_registry["abc"](
+        user=user,
+        config=active_config,
+        request=request,
+        painter_options=PainterOptions.get_instance(),
+        theme=theme,
+        url_renderer=RenderLink(request, response, display_options),
+    )
     dummy_cell = Cell(ColumnSpec(name=painter.ident), None)
     assert isinstance(painter, Painter)
     assert painter.ident == "abc"
@@ -553,6 +575,10 @@ def test_registered_display_hints() -> None:
         ".hardware.cpu.logical_cpus",
         ".hardware.cpu.max_speed",
         ".hardware.cpu.model",
+        ".hardware.cpu.nodes:",
+        ".hardware.cpu.nodes:*.cores",
+        ".hardware.cpu.nodes:*.model",
+        ".hardware.cpu.nodes:*.node_name",
         ".hardware.cpu.sharing_mode",
         ".hardware.cpu.smt_threads",
         ".hardware.cpu.threads",
@@ -614,6 +640,12 @@ def test_registered_display_hints() -> None:
         ".hardware.system.model",
         ".hardware.system.model_name",
         ".hardware.system.node_name",
+        ".hardware.system.nodes:",
+        ".hardware.system.nodes:*.id",
+        ".hardware.system.nodes:*.model",
+        ".hardware.system.nodes:*.node_name",
+        ".hardware.system.nodes:*.product",
+        ".hardware.system.nodes:*.serial",
         ".hardware.system.partition_name",
         ".hardware.system.pki_appliance_version",
         ".hardware.system.product",
@@ -760,9 +792,6 @@ def test_registered_display_hints() -> None:
         ".software.applications.check_mk.cluster.is_cluster",
         ".software.applications.check_mk.cluster.nodes:",
         ".software.applications.check_mk.cluster.nodes:*.name",
-        ".software.applications.check_mk.host_labels:",
-        ".software.applications.check_mk.host_labels:*.label",
-        ".software.applications.check_mk.host_labels:*.plugin_name",
         ".software.applications.check_mk.num_hosts",
         ".software.applications.check_mk.num_services",
         ".software.applications.check_mk.sites:",
@@ -1035,6 +1064,21 @@ def test_registered_display_hints() -> None:
         ".software.applications.oracle.tablespaces:*.type",
         ".software.applications.oracle.tablespaces:*.used_size",
         ".software.applications.oracle.tablespaces:*.version",
+        ".software.applications.synthetic_monitoring.",
+        ".software.applications.synthetic_monitoring.plans:",
+        ".software.applications.synthetic_monitoring.plans:*.application",
+        ".software.applications.synthetic_monitoring.plans:*.suite_name",
+        ".software.applications.synthetic_monitoring.plans:*.plan_id",
+        ".software.applications.synthetic_monitoring.plans:*.variant",
+        ".software.applications.synthetic_monitoring.tests:",
+        ".software.applications.synthetic_monitoring.tests:*.application",
+        ".software.applications.synthetic_monitoring.tests:*.bottom_level_suite_name",
+        ".software.applications.synthetic_monitoring.tests:*.plan_id",
+        ".software.applications.synthetic_monitoring.tests:*.suite_name",
+        ".software.applications.synthetic_monitoring.tests:*.test_name",
+        ".software.applications.synthetic_monitoring.tests:*.test_item",
+        ".software.applications.synthetic_monitoring.tests:*.top_level_suite_name",
+        ".software.applications.synthetic_monitoring.tests:*.variant",
         ".software.applications.vmwareesx.",
         ".software.applications.vmwareesx:*.",
         ".software.applications.vmwareesx:*.clusters.",
@@ -1093,7 +1137,7 @@ def test_get_inventory_display_hint() -> None:
     assert isinstance(hint, dict)
 
 
-@pytest.mark.usefixtures("suppress_license_expiry_header")
+@pytest.mark.usefixtures("suppress_license_expiry_header", "patch_theme")
 def test_view_page(
     logged_in_admin_wsgi_app: WebTestAppForCMK, mock_livestatus: MockLiveStatusConnection
 ) -> None:

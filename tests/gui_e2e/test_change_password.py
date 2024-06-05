@@ -8,12 +8,13 @@ from collections.abc import Iterator
 
 import pytest
 
-from tests.testlib.playwright.helpers import PPage
-from tests.testlib.site import Site
+from tests.testlib.playwright.helpers import CmkCredentials
+from tests.testlib.playwright.pom.login import LoginPage
+from tests.testlib.site import ADMIN_USER, Site
 
 
 @pytest.fixture(name="with_password_policy")
-def fixture_with_password_policy(logged_in_page: PPage, test_site: Site) -> Iterator[None]:
+def fixture_with_password_policy(logged_in_page: LoginPage, test_site: Site) -> Iterator[None]:
     """
     Navigate to the global setting for the password policy, set it to require *at least two groups*
     and disable the policy again when done.
@@ -46,11 +47,10 @@ def fixture_with_password_policy(logged_in_page: PPage, test_site: Site) -> Iter
     logged_in_page.go(home)
 
 
-def _change_password(page: PPage, new_pw: str, new_pw_conf: str, old_pw: str) -> None:
+def _change_password(page: LoginPage, new_pw: str, new_pw_conf: str, old_pw: str) -> None:
     # first go to dashboard to ensure we're reloading the page in case we're already there
     page.goto_main_dashboard()
-    page.main_menu.user.click()
-    page.main_menu.locator("text=Change password").click()
+    page.main_menu.user_change_password.click()
     page.main_area.locator("input[name='cur_password']").fill(old_pw)
     page.main_area.locator("input[name='password']").fill(new_pw)
     page.main_area.locator("input[name='password2']").fill(new_pw_conf)
@@ -64,10 +64,15 @@ def _change_password(page: PPage, new_pw: str, new_pw_conf: str, old_pw: str) ->
         ("😎 😎 😎 😎 😎 😎 ", "😎 😎 😎 😎 😎 😎 "),
         ("😎 😎 😎 😎 😎 😎 ", ""),
     ],
+    ids=[
+        "lowercase",
+        "specialchars",
+        "specialchars_no_confirm",
+    ],
 )
 def test_user_change_password_success(
     test_site: Site,
-    logged_in_page: PPage,
+    logged_in_page: LoginPage,
     new_pw: str,
     new_pw_conf: str,
 ) -> None:
@@ -80,6 +85,13 @@ def test_user_change_password_success(
     _change_password(page, new_pw=new_pw, new_pw_conf=new_pw_conf, old_pw=test_site.admin_password)
     page.main_area.check_success("Successfully changed password.")
 
+    # Logout and then login with the new password
+    page.logout()
+    new_credentials = CmkCredentials(username=ADMIN_USER, password=new_pw)
+    page.login(new_credentials)
+    page.main_area.check_page_title("Main dashboard")
+
+    # Reset the password to the original one
     test_site.reset_admin_password()
 
 
@@ -96,7 +108,7 @@ def test_user_change_password_success(
     ],
 )
 def test_user_change_password_errors(
-    logged_in_page: PPage,
+    logged_in_page: LoginPage,
     new_pw: str,
     new_pw_conf: str,
     old_pw: str,
@@ -109,7 +121,7 @@ def test_user_change_password_errors(
 
 
 def test_user_change_password_incompatible_with_policy(
-    logged_in_page: PPage,
+    logged_in_page: LoginPage,
     with_password_policy: None,
 ) -> None:
     """
@@ -134,7 +146,7 @@ def test_user_change_password_incompatible_with_policy(
     ],
 )
 def test_edit_user_change_password_errors(
-    logged_in_page: PPage,
+    logged_in_page: LoginPage,
     test_site: Site,
     new_pw: str,
     new_pw_conf: str,
@@ -151,7 +163,7 @@ def test_edit_user_change_password_errors(
 
 
 def test_setting_password_incompatible_with_policy(
-    logged_in_page: PPage, test_site: Site, with_password_policy: None
+    logged_in_page: LoginPage, test_site: Site, with_password_policy: None
 ) -> None:
     """
     Activate a password policy that requries at least 2 groups of characters (via fixture)

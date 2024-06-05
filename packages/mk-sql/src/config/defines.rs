@@ -6,6 +6,9 @@ pub mod keys {
     pub const MSSQL: &str = "mssql";
     pub const MAIN: &str = "main";
 
+    pub const OPTIONS: &str = "options";
+    pub const MAX_CONNECTIONS: &str = "max_connections";
+
     pub const AUTHENTICATION: &str = "authentication";
     pub const USERNAME: &str = "username";
     pub const PASSWORD: &str = "password";
@@ -21,6 +24,7 @@ pub mod keys {
     pub const TIMEOUT: &str = "timeout";
     pub const CA: &str = "ca";
     pub const CLIENT_CERTIFICATE: &str = "client_certificate";
+    pub const TRUST_SERVER_CERTIFICATE: &str = "trust_server_certificate";
 
     pub const SECTIONS: &str = "sections";
     pub const CACHE_AGE: &str = "cache_age";
@@ -66,7 +70,7 @@ pub mod values {
 
 pub mod defaults {
     use super::values;
-    pub const MAX_CONNECTIONS: u32 = 16;
+    pub const MAX_CONNECTIONS: u32 = 6;
     pub const MAX_QUERIES: u32 = 64;
 
     #[cfg(windows)]
@@ -93,5 +97,6 @@ pub mod defaults {
 
     pub const DISCOVERY_DETECT: bool = true;
 
+    pub const TRUST_SERVER_CERTIFICATE: bool = true;
     pub const DEFAULT_SEP: char = ' ';
 }

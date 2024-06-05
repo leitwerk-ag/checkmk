@@ -2,7 +2,7 @@
 // This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 // conditions defined in the file COPYING, which is part of this source code package.
 
-use crate::types::ComputerName;
+use crate::types::{ComputerName, InstanceName};
 
 use super::sqls::find_known_query;
 use super::{client::Client, sqls};
@@ -88,7 +88,7 @@ impl<'a> Column<'a> for Row {
 }
 
 /// Runs predefined query
-/// return Vec<Vec<Row>> as a Results Vec: one Vec<Row> per one statement in query.
+/// return Vec\<Vec\<Row\>\> as a Results Vec: one Vec\<Row\> per one statement in query.
 pub async fn run_known_query<T: Borrow<sqls::Id>>(
     client: &mut Client,
     id: T,
@@ -100,7 +100,7 @@ pub async fn run_known_query<T: Borrow<sqls::Id>>(
 }
 
 /// Runs any query
-/// return Vec<Vec<Row>> as a Results Vec: one Vec<Row> per one statement in query.
+/// return Vec\<Vec\<Row\>\> as a Results Vec: one Vec\<Row\> per one statement in query.
 pub async fn run_custom_query<T: AsRef<str>>(client: &mut Client, query: T) -> Result<Vec<Answer>> {
     let query = query.as_ref();
     if query.is_empty() {
@@ -109,15 +109,16 @@ pub async fn run_custom_query<T: AsRef<str>>(client: &mut Client, query: T) -> R
     let start = Instant::now();
     let result = exec_sql(client, query).await;
     log_query(start, &result, make_short_query(query));
+    log::trace!("Full query: `{}`", query);
     result
 }
 
-fn log_query(start: Instant, result: &Result<Vec<Answer>>, query_name: &str) {
+fn log_query(start: Instant, result: &Result<Vec<Answer>>, query_body: &str) {
     let total = (Instant::now() - start).as_millis();
     match result {
-        Ok(_) => log::info!("Query [SUCCESS], took {total} ms, `{query_name}`"),
+        Ok(_) => log::info!("Query [SUCCESS], took {total} ms, `{query_body}`"),
         Err(err) => {
-            log::info!("Query [ERROR], took {total} ms, error: `{err}`, query: `{query_name}`",)
+            log::info!("Query [ERROR], took {total} ms, error: `{err}`, query: `{query_body}`",)
         }
     }
 }
@@ -138,7 +139,7 @@ async fn exec_sql(client: &mut Client, query: &str) -> Result<Vec<Answer>> {
 
 fn make_short_query(query: &str) -> &str {
     query
-        .get(0..std::cmp::max(16, query.len() - 1))
+        .get(0..std::cmp::min(16, query.len() - 1))
         .unwrap_or_default()
 }
 
@@ -155,4 +156,33 @@ pub async fn obtain_computer_name(client: &mut Client) -> Result<Option<Computer
         .flatten()
         .map(str::to_string)
         .map(|s| s.into()))
+}
+
+pub async fn obtain_instance_name(client: &mut Client) -> Result<Option<InstanceName>> {
+    let rows = run_custom_query(client, "select @@ServiceName").await?;
+    if rows.is_empty() || rows[0].is_empty() {
+        log::warn!("Instance name not found with query");
+        return Ok(None);
+    }
+    let row = &rows[0];
+    Ok(row[0]
+        .try_get::<&str, usize>(0)
+        .ok()
+        .flatten()
+        .map(str::to_string)
+        .map(|s| s.into()))
+}
+
+pub async fn obtain_system_user(client: &mut Client) -> Result<Option<String>> {
+    let rows = run_custom_query(client, "select System_User").await?;
+    if rows.is_empty() || rows[0].is_empty() {
+        log::warn!("Can't obtain system user with query `select SystemUser`");
+        return Ok(None);
+    }
+    let row = &rows[0];
+    Ok(row[0]
+        .try_get::<&str, usize>(0)
+        .ok()
+        .flatten()
+        .map(str::to_string))
 }

@@ -137,7 +137,7 @@ class UserContactOption(BaseSchema):
     )
 
 
-class CustomTimeRange(BaseSchema):
+class DisableNotificationCustomTimeRange(BaseSchema):
     # TODO: gui_fields.Dict validation also for Timperiods
     start_time = fields.DateTime(
         format="iso8601",
@@ -160,7 +160,7 @@ class DisabledNotifications(BaseSchema):
         example=False,
     )
     timerange = fields.Nested(
-        CustomTimeRange,
+        DisableNotificationCustomTimeRange,
         description="A custom timerange during which notifications are disabled",
         required=False,
         example={
@@ -250,7 +250,7 @@ class CreateUser(CustomUserAttributes):
         attribute="alias",
     )
     customer = gui_fields.customer_field(
-        required=True,
+        required=False,
         should_exist=True,
         allow_global=True,
         description="By specifying a customer, you configure on which sites the user object will be available. "

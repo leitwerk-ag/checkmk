@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# pylint: disable=protected-access
+
 import ast
 import csv
 import json
@@ -18,10 +20,14 @@ from typing import NamedTuple, NewType
 
 import isort
 import pytest
-from pipfile import Pipfile  # type: ignore[import]
+from pipfile import Pipfile  # type: ignore[import-untyped]
 
-from tests.testlib import repo_path
-from tests.testlib.utils import branch_from_env, current_base_branch_name, is_enterprise_repo
+from tests.testlib.utils import (
+    branch_from_env,
+    current_base_branch_name,
+    is_enterprise_repo,
+    repo_path,
+)
 
 IGNORED_LIBS = {
     "agent_receiver",
@@ -39,6 +45,7 @@ BUILD_DIRS = {
     # This directory needs to be ignored for a few days (until all workspaces were cleared)
     repo_path() / "agent-receiver/build",
     repo_path() / "bazel-check_mk",
+    repo_path() / "bazel-out",
     repo_path() / "omd/build",
     repo_path() / "packages/cmc/build",
     repo_path() / "packages/cmc/test",
@@ -151,11 +158,14 @@ def iter_sourcefiles(basepath: Path) -> Iterable[Path]:
 
 def iter_relevant_files(basepath: Path) -> Iterable[Path]:
     exclusions = (
-        basepath / "tests",
         basepath / "agents",  # There are so many optional imports...
-        basepath / "packages",  # ignore all packages
-        basepath / "enterprise/core/src/test",  # test files
+        basepath / "node_modules",
         basepath / "omd/license_sources",  # update_licenses.py contains imports
+        basepath / "packages",  # ignore all packages
+        basepath / "tests",
+        # migration_helpers need libcst. I am conservative here, but wondering if we shouldn't
+        # exclude all treasures.
+        basepath / "doc/treasures/migration_helpers",
     )
 
     for source_file_path in iter_sourcefiles(basepath):
@@ -335,7 +345,6 @@ CEE_UNUSED_PACKAGES = [
     "markupsafe",
     "more-itertools",
     "multidict",
-    "ordered-set",
     "pbr",
     "ply",
     "psycopg2-binary",
@@ -343,6 +352,7 @@ CEE_UNUSED_PACKAGES = [
     "pymssql",
     "pymysql",
     "pyrsistent",
+    "redfish",  # used by optional MKP
     "requests-kerberos",
     "s3transfer",
     "setuptools-scm",
@@ -381,6 +391,7 @@ def test_dependencies_are_declared() -> None:
     undeclared_dependencies = list(get_undeclared_dependencies())
     undeclared_dependencies_str = {d.name for d in undeclared_dependencies}
     known_undeclared_dependencies = {
+        "buildscripts",  # used in build helper scripts in buildscripts/scripts
         "netsnmp",  # We ship it with omd/packages
         "pymongo",  # Optional except ImportError...
         "pytest",  # In __main__ guarded section in cmk/special_agents/utils/misc.py

@@ -16,7 +16,7 @@ TAR_GZ := $(shell which tar) xzf
 TEST := $(shell which test)
 TOUCH := $(shell which touch)
 UNZIP := $(shell which unzip) -o
-BAZEL_BUILD := "../scripts/run-bazel-build.sh"
+BAZEL_BUILD := $(if $(CI),../scripts/run-bazel-build.sh,bazel build)
 
 # Bazel paths
 BAZEL_BIN := "$(REPO_PATH)/bazel-bin"
@@ -55,6 +55,7 @@ $(BUILD_HELPER_DIR)/%-skel-dir: $(PRE_INSTALL)
 	    fi ; \
 	    if [ -d "$$PACKAGE_PATH/skel" ]; then \
 		tar cf - -C "$$PACKAGE_PATH/skel" \
+		    --exclude="BUILD" \
 		    --exclude="*~" \
 		    --exclude=".gitignore" \
 		    --exclude=".f12" \
@@ -158,7 +159,8 @@ include \
     packages/neb/neb.make \
     packages/unixcat/unixcat.make \
     packages/xmlsec1/xmlsec1.make \
-    packages/robotmk/robotmk.make
+    packages/robotmk/robotmk.make \
+    packages/redfish_mkp/redfish_mkp.make
 
 ifeq ($(EDITION),enterprise)
 include \

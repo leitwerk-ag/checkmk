@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# pylint: disable=protected-access
+
 
 from collections.abc import Mapping
 
@@ -28,7 +30,7 @@ from cmk.base.config import FilterMode, HostCheckTable
 
 @pytest.fixture(autouse=True, scope="module")
 def _use_fix_register(fix_register):
-    """These tests modify the plugin registry. Make sure to load it first."""
+    """These tests modify the plug-in registry. Make sure to load it first."""
 
 
 def test_cluster_ignores_nodes_parameters(monkeypatch: MonkeyPatch) -> None:
@@ -568,7 +570,7 @@ def test_check_table__static_checks_win(monkeypatch: MonkeyPatch) -> None:
     assert len(chk_table) == 1
     # assert static checks won
     effective_params = chk_table[ServiceID(plugin_name, item)].parameters.evaluate(lambda _: True)
-    assert effective_params["source"] == "static"  # type: ignore[index,call-overload]
+    assert effective_params["source"] == "static"
 
 
 @pytest.mark.parametrize(
@@ -637,7 +639,7 @@ def test_check_table__get_static_check_entries(
     )
 
     static_check_parameters = [
-        service.parameters for service in config._get_enforced_services(config_cache, hostname)
+        service.parameters for _, service in config_cache.enforced_services_table(hostname).values()
     ]
 
     entries = config._get_checkgroup_parameters(

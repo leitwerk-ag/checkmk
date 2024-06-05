@@ -7,8 +7,7 @@
 from cmk.base.check_api import LegacyCheckDefinition
 from cmk.base.config import check_info
 
-from cmk.agent_based.v2 import any_of, contains, render, SNMPTree, startswith
-from cmk.agent_based.v2.type_defs import StringTable
+from cmk.agent_based.v2 import any_of, contains, render, SNMPTree, startswith, StringTable
 
 
 def inventory_dell_eql_storage(info):
@@ -73,6 +72,7 @@ def check_dell_eql_storage(item, _no_params, info):
             snap_bytes = int(snap_storage) * 1048576
             perfdata = [
                 ("fs_used", used_bytes),
+                ("fs_used_percent", used_bytes / total_bytes * 100),
                 ("fs_size", total_bytes),
                 ("fs_free", total_bytes - used_bytes),
             ]

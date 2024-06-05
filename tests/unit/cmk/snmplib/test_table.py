@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# pylint: disable=protected-access
+
 import dataclasses
 import logging
 from collections.abc import Sequence
@@ -31,6 +33,7 @@ from cmk.snmplib import (
     SNMPContextTimeout,
     SNMPHostConfig,
     SNMPTable,
+    SNMPVersion,
     SpecialColumn,
 )
 
@@ -44,8 +47,8 @@ SNMPConfig = SNMPHostConfig(
     ipaddress=HostAddress("1.2.3.4"),
     credentials="",
     port=42,
-    is_bulkwalk_host=False,
-    is_snmpv2or3_without_bulkwalk_host=False,
+    bulkwalk_enabled=True,
+    snmp_version=SNMPVersion.V1,
     bulk_walk_size_of=0,
     timing={},
     oid_range_limits={},
@@ -93,6 +96,7 @@ def test_get_snmp_table(
                 tree=info,
                 walk_cache={},
                 backend=backend,
+                log=logger.debug,
             )
         return [
             get_snmp_table(
@@ -100,6 +104,7 @@ def test_get_snmp_table(
                 tree=i,
                 walk_cache={},
                 backend=backend,
+                log=logger.debug,
             )
             for i in info
         ]
@@ -129,7 +134,7 @@ def test_sanitize_snmp_encoding(
     ] == expected
 
 
-def test_is_bulkwalk_host(monkeypatch: MonkeyPatch) -> None:
+def test_use_advanced_snmp_version(monkeypatch: MonkeyPatch) -> None:
     ts = Scenario()
     ts.set_ruleset(
         "bulkwalk_hosts",
@@ -140,14 +145,20 @@ def test_is_bulkwalk_host(monkeypatch: MonkeyPatch) -> None:
     config_cache = ts.apply(monkeypatch)
     assert (
         config_cache.make_snmp_config(
-            HostName("abc"), HostAddress("1.2.3.4"), SourceType.HOST
-        ).is_bulkwalk_host
+            HostName("abc"),
+            HostAddress("1.2.3.4"),
+            SourceType.HOST,
+            backend_override=None,
+        ).use_bulkwalk
         is False
     )
     assert (
         config_cache.make_snmp_config(
-            HostName("localhost"), HostAddress("1.2.3.4"), SourceType.HOST
-        ).is_bulkwalk_host
+            HostName("localhost"),
+            HostAddress("1.2.3.4"),
+            SourceType.HOST,
+            backend_override=None,
+        ).use_bulkwalk
         is True
     )
 
@@ -165,18 +176,19 @@ def test_is_classic_at_snmp_v1_host(monkeypatch: MonkeyPatch) -> None:
     ts.add_host(HostName("bulkwalk_h"))
     ts.add_host(HostName("v2c_h"))
     ts.add_host(HostName("not_included"))
+    ts.add_host(HostName("v3_h"))
     monkeypatch.setattr(ConfigCache, "_is_inline_backend_supported", lambda *args: True)
 
     config_cache = ts.apply(monkeypatch)
 
     # not bulkwalk and not v2c
-    assert config_cache.get_snmp_backend(HostName("not_included")) is SNMPBackendEnum.CLASSIC
+    assert config_cache.get_snmp_backend(HostName("not_included")) is SNMPBackendEnum.INLINE
     assert config_cache.get_snmp_backend(HostName("bulkwalk_h")) is SNMPBackendEnum.INLINE
     assert config_cache.get_snmp_backend(HostName("v2c_h")) is SNMPBackendEnum.INLINE
 
     # credentials is v3 -> INLINE
     monkeypatch.setattr(ConfigCache, "_snmp_credentials", lambda *args: ("a", "p"))
-    assert config_cache.get_snmp_backend(HostName("not_included")) is SNMPBackendEnum.INLINE
+    assert config_cache.get_snmp_backend(HostName("v3_h")) is SNMPBackendEnum.INLINE
 
 
 def test_walk_passes_on_timeout_with_snmpv3_context_continue_on_timeout() -> None:
@@ -198,7 +210,7 @@ def test_walk_passes_on_timeout_with_snmpv3_context_continue_on_timeout() -> Non
             backend=Backend(
                 dataclasses.replace(
                     SNMPConfig,
-                    credentials=(),  # for `is_snmpv3_host`
+                    snmp_version=SNMPVersion.V3,
                     snmpv3_contexts=[
                         SNMPContextConfig(
                             section=section_name,
@@ -209,10 +221,10 @@ def test_walk_passes_on_timeout_with_snmpv3_context_continue_on_timeout() -> Non
                 ),
                 logging.getLogger("test"),
             ),
+            log=logger.debug,
         )
 
-    # pylint: disable=unidiomatic-typecheck
-    assert type(excinfo.value) is not SNMPContextTimeout
+    assert type(excinfo.value) is not SNMPContextTimeout  # pylint: disable=unidiomatic-typecheck
 
 
 def test_walk_raises_on_timeout_without_snmpv3_context_stop_on_timeout() -> None:
@@ -245,7 +257,7 @@ def test_walk_raises_on_timeout_without_snmpv3_context_stop_on_timeout() -> None
                 ),
                 logging.getLogger("test"),
             ),
+            log=logger.debug,
         )
 
-    # pylint: disable=unidiomatic-typecheck
-    assert type(excinfo.value) is SNMPContextTimeout
+    assert type(excinfo.value) is SNMPContextTimeout  # pylint: disable=unidiomatic-typecheck

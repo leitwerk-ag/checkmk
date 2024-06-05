@@ -108,8 +108,8 @@ impl SectionBuilder {
         }
         self
     }
-    pub fn set_async(mut self) -> Self {
-        self.is_async = true;
+    pub fn set_async(mut self, value: bool) -> Self {
+        self.is_async = value;
         self
     }
 
@@ -220,7 +220,7 @@ impl Section {
     /// - databases:     # name
     ///   is_async: true    # option
     ///   disabled: true # option
-    /// Note: yaml_rust represents such entry as a LinkedHashMap
+    /// Note: yaml_rust2 represents such entry as a LinkedHashMap
     pub fn from_yaml(entry: &Yaml) -> Result<Self> {
         let mut section = entry
             .as_hash()
@@ -245,10 +245,10 @@ impl Section {
         let c = yaml.get_string(keys::SEP).and_then(|s| s.chars().next());
         let builder = SectionBuilder::new(name).sep(c);
 
-        if yaml.get_bool(keys::DISABLED, false) {
+        if yaml.get_optional_bool(keys::DISABLED) == Some(true) {
             builder.set_disabled()
-        } else if yaml.get_bool(keys::IS_ASYNC, false) {
-            builder.set_async()
+        } else if let Some(v) = yaml.get_optional_bool(keys::IS_ASYNC) {
+            builder.set_async(v)
         } else {
             builder
         }
@@ -257,7 +257,7 @@ impl Section {
 }
 
 impl Sections {
-    pub fn from_yaml(yaml: &Yaml, default: Sections) -> Result<Self> {
+    pub fn from_yaml(yaml: &Yaml, default: &Sections) -> Result<Self> {
         let cache_age = yaml.get_int::<u32>(keys::CACHE_AGE).unwrap_or_else(|| {
             log::debug!("Using default cache age");
             default.cache_age()
@@ -336,7 +336,7 @@ sections:
 
     #[test]
     fn test_sections_from_yaml_full() {
-        let s = Sections::from_yaml(&create_yaml(SECTIONS_FULL), Sections::default()).unwrap();
+        let s = Sections::from_yaml(&create_yaml(SECTIONS_FULL), &Sections::default()).unwrap();
         assert_eq!(
             s.select(&[SectionKind::Sync])
                 .iter()
@@ -362,7 +362,7 @@ sections:
 
     #[test]
     fn test_sections_from_yaml_default() {
-        let s = Sections::from_yaml(&create_sections_yaml_default(), Sections::default()).unwrap();
+        let s = Sections::from_yaml(&create_sections_yaml_default(), &Sections::default()).unwrap();
         assert_eq!(
             HashSet::from_iter(
                 s.select(&[SectionKind::Sync])
@@ -380,7 +380,7 @@ sections:
         );
         assert_eq!(s.cache_age(), defaults::SECTIONS_CACHE_AGE);
         assert_eq!(
-            Sections::from_yaml(&create_yaml("_sections:\n"), Sections::default())
+            Sections::from_yaml(&create_yaml("_sections:\n"), &Sections::default())
                 .unwrap()
                 .sections()
                 .len(),

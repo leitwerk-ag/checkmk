@@ -12,6 +12,7 @@ from typing import Any, AnyStr, NamedTuple
 import requests
 
 from tests.testlib.rest_api_client import RequestHandler, Response
+from tests.testlib.version import CMKVersion
 
 from cmk.gui.http import HTTPMethod
 
@@ -83,6 +84,7 @@ class CMKOpenApiSession(requests.Session):
         host: str,
         user: str,
         password: str,
+        site_version: CMKVersion,
         port: int = 80,
         site: str = "heute",
         api_version: str = "1.0",
@@ -91,6 +93,7 @@ class CMKOpenApiSession(requests.Session):
         self.host = host
         self.port = port
         self.site = site
+        self.site_version = site_version
         self.api_version = api_version
         self.headers["Accept"] = "application/json"
         self.set_authentication_header(user, password)
@@ -169,6 +172,13 @@ class CMKOpenApiSession(requests.Session):
             raise Redirect(redirect_url=response.headers["Location"])  # activation pending
         raise UnexpectedResponse.from_response(response)
 
+    def pending_changes(self, sites: list[str] | None = None) -> list[dict[str, Any]]:
+        """Returns a list of all changes currently pending."""
+        response = self.get("/domain-types/activation_run/collections/pending_changes")
+        assert response.status_code == 200
+        value: list[dict[str, Any]] = response.json()["value"]
+        return value
+
     def activate_changes_and_wait_for_completion(
         self,
         sites: list[str] | None = None,
@@ -176,7 +186,12 @@ class CMKOpenApiSession(requests.Session):
         timeout: int = 60,
     ) -> bool:
         with self._wait_for_completion(timeout, "get"):
-            return self.activate_changes(sites, force_foreign_changes)
+            if activation_started := self.activate_changes(sites, force_foreign_changes):
+                pending_changes = self.pending_changes()
+                assert (
+                    len(pending_changes) == 0
+                ), f"There are pending changes that were not activated: {pending_changes}"
+            return activation_started
 
     def create_user(
         self,
@@ -382,6 +397,29 @@ class CMKOpenApiSession(requests.Session):
         with self._wait_for_completion(timeout, "post"):
             self.rename_host(hostname_old=hostname_old, hostname_new=hostname_new, etag=etag)
 
+    def create_host_group(self, name: str, alias: str) -> requests.Response:
+        response = self.post(
+            "/domain-types/host_group_config/collections/all",
+            json={"name": name, "alias": alias},
+        )
+        if response.status_code != 200:
+            raise UnexpectedResponse.from_response(response)
+        return response
+
+    def get_host_group(self, name: str) -> tuple[dict[Any, str], str]:
+        response = self.get(f"/objects/host_group_config/{name}")
+        if response.status_code != 200:
+            raise UnexpectedResponse.from_response(response)
+        return (
+            response.json()["extensions"],
+            response.headers["Etag"],
+        )
+
+    def delete_host_group(self, name: str) -> None:
+        response = self.delete(f"/objects/host_group_config/{name}")
+        if response.status_code != 204:
+            raise UnexpectedResponse.from_response(response)
+
     def discover_services(
         self,
         hostname: str,
@@ -405,20 +443,33 @@ class CMKOpenApiSession(requests.Session):
     def bulk_discover_services_and_wait_for_completion(
         self,
         hostnames: list[str],
-        mode: str = "new",
+        monitor_undecided_services: bool = True,
+        remove_vanished_services: bool = False,
+        update_service_labels: bool = False,
+        update_host_labels: bool = True,
         do_full_scan: bool = True,
         bulk_size: int = 10,
         ignore_errors: bool = True,
     ) -> str:
+        body = {
+            "hostnames": hostnames,
+            "do_full_scan": do_full_scan,
+            "bulk_size": bulk_size,
+            "ignore_errors": ignore_errors,
+        }
+
+        if self.site_version >= CMKVersion("2.3.0", self.site_version.edition):
+            body["options"] = {
+                "monitor_undecided_services": monitor_undecided_services,
+                "remove_vanished_services": remove_vanished_services,
+                "update_service_labels": update_service_labels,
+                "update_host_labels": update_host_labels,
+            }
+        else:
+            body["mode"] = "new"
+
         response = self.post(
-            "/domain-types/discovery_run/actions/bulk-discovery-start/invoke",
-            json={
-                "hostnames": hostnames,
-                "mode": mode,
-                "do_full_scan": do_full_scan,
-                "bulk_size": bulk_size,
-                "ignore_errors": ignore_errors,
-            },
+            "/domain-types/discovery_run/actions/bulk-discovery-start/invoke", json=body
         )
         if response.status_code != 200:
             raise UnexpectedResponse.from_response(response)
@@ -484,7 +535,7 @@ class CMKOpenApiSession(requests.Session):
                     url=redirect_url,
                     allow_redirects=False,
                 )
-                if response.status_code == 204:  # job has finished
+                if response.status_code == 204 and not response.content:  # job has finished
                     break
 
                 if response.status_code != 302:
@@ -534,27 +585,47 @@ class CMKOpenApiSession(requests.Session):
 
     def create_rule(
         self,
-        ruleset_name: str,
         value: object,
+        ruleset_name: str | None = None,
         folder: str = "/",
         conditions: dict[str, Any] | None = None,
     ) -> str:
         response = self.post(
             "/domain-types/rule/collections/all",
-            json={
-                "ruleset": ruleset_name,
-                "folder": folder,
-                "properties": {
-                    "disabled": False,
-                },
-                "value_raw": repr(value),
-                "conditions": conditions or {},
-            },
+            json=(
+                {
+                    "ruleset": ruleset_name,
+                    "folder": folder,
+                    "properties": {
+                        "disabled": False,
+                    },
+                    "value_raw": repr(value),
+                    "conditions": conditions or {},
+                }
+                if ruleset_name
+                else value
+            ),
         )
         if response.status_code != 200:
             raise UnexpectedResponse.from_response(response)
         the_id: str = response.json()["id"]
         return the_id
+
+    def get_rule(self, rule_id: str) -> tuple[dict[Any, str], str] | None:
+        """
+        Returns
+            a tuple with the rule details and the Etag header if the rule_id was found
+            None if the rule_id was not found
+        """
+        response = self.get(f"/objects/rule/{rule_id}")
+        if response.status_code not in (200, 404):
+            raise UnexpectedResponse.from_response(response)
+        if response.status_code == 404:
+            return None
+        return (
+            response.json()["extensions"],
+            response.headers["Etag"],
+        )
 
     def delete_rule(self, rule_id: str) -> None:
         response = self.delete(f"/objects/rule/{rule_id}")
@@ -565,6 +636,15 @@ class CMKOpenApiSession(requests.Session):
         response = self.get(
             "/domain-types/rule/collections/all",
             params={"ruleset_name": ruleset_name},
+        )
+        if response.status_code != 200:
+            raise UnexpectedResponse.from_response(response)
+        value: list[dict[str, Any]] = response.json()["value"]
+        return value
+
+    def get_rulesets(self) -> list[dict[str, Any]]:
+        response = self.get(
+            "/domain-types/ruleset/collections/all",
         )
         if response.status_code != 200:
             raise UnexpectedResponse.from_response(response)

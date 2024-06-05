@@ -24,7 +24,7 @@ from cmk.utils.crypto.secrets import AuthenticationSecret
 from cmk.utils.site import omd_site
 from cmk.utils.user import UserId
 
-import cmk.gui.utils as utils
+from cmk.gui import utils
 from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.i18n import _
@@ -45,7 +45,11 @@ def auth_cookie_value(username: UserId, session_id: str) -> str:
 
 def generate_auth_hash(username: UserId, session_id: str) -> str:
     """Generates a hash to be added into the cookie value"""
-    return AuthenticationSecret().hmac(f"{username}{session_id}{_load_serial(username)}")
+    return (
+        AuthenticationSecret()
+        .secret.hmac(f"{username}{session_id}{_load_serial(username)}".encode("utf-8"))
+        .hex()
+    )
 
 
 def _load_serial(username: UserId) -> int:

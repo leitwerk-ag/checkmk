@@ -6,17 +6,10 @@ from collections.abc import Mapping, Sequence
 
 import pytest
 
-from cmk.plugins.pure_storage_fa.server_side_calls.special_agent import commands_function, Params
-from cmk.server_side_calls.v1 import (
-    HostConfig,
-    IPAddressFamily,
-    NetworkAddressConfig,
-    PlainTextSecret,
-    ResolvedIPAddressFamily,
-    Secret,
-    SpecialAgentCommand,
-    StoredSecret,
+from cmk.plugins.pure_storage_fa.server_side_calls.special_agent import (
+    special_agent_pure_storage_fa,
 )
+from cmk.server_side_calls.v1 import HostConfig, IPv4Config, Secret, SpecialAgentCommand
 
 
 @pytest.mark.parametrize(
@@ -26,7 +19,7 @@ from cmk.server_side_calls.v1 import (
             {
                 "timeout": 1,
                 "ssl": ("hostname", None),
-                "api_token": ("store", "stored_secret"),
+                "api_token": Secret(23),
             },
             "1.2.3.4",
             "host",
@@ -36,30 +29,15 @@ from cmk.server_side_calls.v1 import (
                 "--cert-server-name",
                 "host",
                 "--api-token",
-                StoredSecret("stored_secret", format="%s"),
+                Secret(23).unsafe(),
                 "1.2.3.4",
             ],
             id="Available timeout and ssl True and stored api token and hostip available",
         ),
         pytest.param(
             {
-                "ssl": ("deactivated", None),
-                "api_token": ("password", "api_token"),
-            },
-            "",
-            "host",
-            [
-                "--no-cert-check",
-                "--api-token",
-                PlainTextSecret(value="api_token", format="%s"),
-                "host",
-            ],
-            id="No timeout and ssl False and no hostip",
-        ),
-        pytest.param(
-            {
                 "ssl": ("custom_hostname", "something_else"),
-                "api_token": ("password", "api_token"),
+                "api_token": Secret(23),
             },
             "1.2.3.4",
             "host",
@@ -67,7 +45,7 @@ from cmk.server_side_calls.v1 import (
                 "--cert-server-name",
                 "something_else",
                 "--api-token",
-                PlainTextSecret(value="api_token", format="%s"),
+                Secret(23).unsafe(),
                 "1.2.3.4",
             ],
             id="No timeout and ssl custom and hostip available",
@@ -81,15 +59,12 @@ def test_commands_function(
     expected_arguments: Sequence[str | Secret],
 ) -> None:
     assert list(
-        commands_function(
-            Params.model_validate(params),
+        special_agent_pure_storage_fa(
+            params,
             HostConfig(
                 name=hostname,
-                resolved_address=host_ip_address,
                 alias="host",
-                resolved_ip_family=ResolvedIPAddressFamily.IPV4,
-                address_config=NetworkAddressConfig(ip_family=IPAddressFamily.IPV4),
+                ipv4_config=IPv4Config(address=host_ip_address),
             ),
-            {},
         )
     ) == [SpecialAgentCommand(command_arguments=expected_arguments)]

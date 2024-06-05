@@ -9,8 +9,7 @@ from enum import Enum
 from typing import Any, Literal, NamedTuple, NewType
 
 from cmk.agent_based.v1 import check_levels
-from cmk.agent_based.v2 import Metric, render, Result, Service, State
-from cmk.agent_based.v2.type_defs import CheckResult, DiscoveryResult
+from cmk.agent_based.v2 import CheckResult, DiscoveryResult, Metric, render, Result, Service, State
 
 from .size_trend import size_trend
 
@@ -515,8 +514,8 @@ def check_filesystem_levels(
     if warn_mb < 0.0:
         # Negative levels, so user configured thresholds based on space left. Calculate the
         # upper thresholds based on the size of the filesystem
-        crit_mb = int(allocatable_filesystem_size + crit_mb)
-        warn_mb = int(allocatable_filesystem_size + warn_mb)
+        crit_mb = allocatable_filesystem_size + crit_mb
+        warn_mb = allocatable_filesystem_size + warn_mb
 
     status = (
         State.CRIT if used_space >= crit_mb else State.WARN if used_space >= warn_mb else State.OK
@@ -551,7 +550,7 @@ def check_filesystem_levels(
     yield Result(state=status, summary=summary)
 
 
-def df_check_filesystem_single(  # type: ignore[no-untyped-def]
+def df_check_filesystem_single(
     value_store: MutableMapping[str, Any],
     mountpoint: str,
     filesystem_size: float | None,
@@ -560,7 +559,7 @@ def df_check_filesystem_single(  # type: ignore[no-untyped-def]
     inodes_total: float | None,
     inodes_avail: float | None,
     params: Mapping[str, Any],
-    this_time=None,
+    this_time: float | None = None,
 ) -> CheckResult:
     if filesystem_size == 0:
         yield Result(state=State.WARN, summary="Size of filesystem is 0 B")
@@ -596,9 +595,11 @@ def df_check_filesystem_single(  # type: ignore[no-untyped-def]
         reserved_hr = render.disksize(reserved_space * 1024**2)
         yield Result(
             state=State.OK,
-            summary="additionally reserved for root: %s" % reserved_hr  #
-            if subtract_reserved
-            else f"therein reserved for root: {reserved_perc_hr} ({reserved_hr})",  #
+            summary=(
+                "additionally reserved for root: %s" % reserved_hr  #
+                if subtract_reserved
+                else f"therein reserved for root: {reserved_perc_hr} ({reserved_hr})"
+            ),  #
         )
 
     if subtract_reserved:
@@ -618,13 +619,13 @@ def df_check_filesystem_single(  # type: ignore[no-untyped-def]
         yield from check_inodes(params, inodes_total, inodes_avail)
 
 
-def df_check_filesystem_list(  # type: ignore[no-untyped-def]
+def df_check_filesystem_list(
     value_store: MutableMapping[str, Any],
     item: str,
     params: Mapping[str, Any],
     fslist_blocks: FSBlocks,
-    fslist_inodes=None,
-    this_time=None,
+    fslist_inodes: Sequence[tuple[str, float | None, float | None]] = (),
+    this_time: float | None = None,
 ) -> CheckResult:
     """Wrapper for `df_check_filesystem_single` supporting groups"""
 
@@ -649,14 +650,14 @@ def df_check_filesystem_list(  # type: ignore[no-untyped-def]
             "avail_mb": avail_mb,
             "reserved_mb": reserved_mb,
         }
-        for (mountp, size_mb, avail_mb, reserved_mb) in (fslist_blocks or [])
+        for mountp, size_mb, avail_mb, reserved_mb in fslist_blocks
     }
     inodes_info = {
         mountp: {
             "inodes_total": inodes_total,
             "inodes_avail": inodes_avail,
         }
-        for (mountp, inodes_total, inodes_avail) in (fslist_inodes or [])
+        for mountp, inodes_total, inodes_avail in fslist_inodes
     }
 
     if "patterns" not in params:

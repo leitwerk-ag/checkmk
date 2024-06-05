@@ -6,9 +6,7 @@
 import datetime as dt
 import time
 from collections.abc import Mapping
-from typing import Any, Literal
-
-from typing_extensions import TypedDict
+from typing import Any, Literal, TypedDict
 
 from cmk.utils.crypto.password import Password
 from cmk.utils.user import UserId
@@ -20,7 +18,7 @@ from cmk.gui.logged_in import user
 from cmk.gui.openapi.endpoints.user_config.request_schemas import CreateUser, UpdateUser
 from cmk.gui.openapi.endpoints.user_config.response_schemas import UserCollection, UserObject
 from cmk.gui.openapi.endpoints.utils import complement_customer, update_customer_info
-from cmk.gui.openapi.restful_objects import constructors, Endpoint, permissions
+from cmk.gui.openapi.restful_objects import constructors, Endpoint
 from cmk.gui.openapi.restful_objects.registry import EndpointRegistry
 from cmk.gui.openapi.utils import ProblemException, serve_json
 from cmk.gui.type_defs import UserSpec
@@ -31,6 +29,7 @@ from cmk.gui.userdb import (
     load_users,
     locked_attributes,
 )
+from cmk.gui.utils import permission_verification as permissions
 from cmk.gui.watolib.custom_attributes import load_custom_attrs_from_mk_file
 from cmk.gui.watolib.users import delete_users, edit_users, verify_password_policy
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from cmk.utils.version import Edition
 
 from cmk.discover_plugins import discover_plugins, DiscoveredPlugins, PluginGroup
+from cmk.rulesets.v1 import entry_point_prefixes
 from cmk.rulesets.v1.rule_specs import (
     ActiveCheck,
     AgentAccess,
@@ -48,27 +49,10 @@ class LoadedRuleSpec:
 
 def load_api_v1_rule_specs(
     raise_errors: bool,
-) -> tuple[Sequence[str], Sequence[LoadedRuleSpec]]:
+) -> tuple[Sequence[Exception], Sequence[LoadedRuleSpec]]:
     discovered_plugins: DiscoveredPlugins[RuleSpec] = discover_plugins(
-        PluginGroup.RULESETS,
-        {
-            ActiveCheck: "rule_spec_",
-            AgentConfig: "rule_spec_",
-            AgentAccess: "rule_spec_",
-            EnforcedService: "rule_spec_",
-            CheckParameters: "rule_spec_",
-            Host: "rule_spec_",
-            InventoryParameters: "rule_spec_",
-            NotificationParameters: "rule_spec_",
-            DiscoveryParameters: "rule_spec_",
-            Service: "rule_spec_",
-            SNMP: "rule_spec_",
-            SpecialAgent: "rule_spec_",
-        },
-        raise_errors=raise_errors,
+        PluginGroup.RULESETS, entry_point_prefixes(), raise_errors=raise_errors
     )
-
-    errors = [str(e) for e in discovered_plugins.errors]
 
     loaded_plugins = [
         LoadedRuleSpec(rule_spec=plugin, edition_only=_get_edition_only(location.module))
@@ -80,7 +64,7 @@ def load_api_v1_rule_specs(
     ]
     # TODO:
     #  * see if we really need to return the errors. Maybe we can just either ignore or raise them.
-    return errors, loaded
+    return discovered_plugins.errors, loaded
 
 
 def _generate_additional_plugins(

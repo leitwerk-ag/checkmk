@@ -14,15 +14,14 @@ from typing import Literal
 import cmk.utils.cleanup
 import cmk.utils.debug
 import cmk.utils.paths
-import cmk.utils.store as store
-import cmk.utils.tty as tty
+from cmk.utils import store, tty
 from cmk.utils.exceptions import MKBailOut, MKGeneralException
 from cmk.utils.hostaddress import HostName
 
-import cmk.base.core_config as core_config
 import cmk.base.nagios_utils
 import cmk.base.obsolete_output as out
-from cmk.base.config import ConfigCache
+from cmk.base import core_config
+from cmk.base.config import ConfigCache, IPLookup
 from cmk.base.core_config import MonitoringCore
 
 # suppress "Cannot find module" error from mypy
@@ -52,6 +51,7 @@ class CoreAction(enum.Enum):
 
 def do_reload(
     config_cache: ConfigCache,
+    ip_address_of: IPLookup,
     core: MonitoringCore,
     *,
     all_hosts: Iterable[HostName],
@@ -61,6 +61,7 @@ def do_reload(
 ) -> None:
     do_restart(
         config_cache,
+        ip_address_of,
         core,
         action=CoreAction.RELOAD,
         all_hosts=all_hosts,
@@ -72,6 +73,7 @@ def do_reload(
 
 def do_restart(
     config_cache: ConfigCache,
+    ip_address_of: IPLookup,
     core: MonitoringCore,
     *,
     all_hosts: Iterable[HostName],
@@ -86,6 +88,7 @@ def do_restart(
             core_config.do_create_config(
                 core=core,
                 config_cache=config_cache,
+                ip_address_of=ip_address_of,
                 all_hosts=all_hosts,
                 hosts_to_update=hosts_to_update,
                 duplicates=duplicates,

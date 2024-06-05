@@ -7,15 +7,16 @@ from __future__ import annotations
 
 import abc
 import contextlib
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, KW_ONLY
-from typing import Callable, Final, Literal
+from typing import Final, Literal
 
 from cmk.utils.metrics import MetricName
 
 from cmk.gui.graphing._type_defs import TranslatedMetric, UnitInfo
 
 from ._color import mix_colors, parse_color, render_color, scalar_colors
+from ._loader import get_unit_info
 from ._type_defs import GraphConsoldiationFunction
 from ._unit_info import unit_info
 
@@ -41,7 +42,7 @@ def _choose_operator_color(a: str, b: str) -> str:
 
 
 def _make_unit_info(explicit_unit_name: str, unit_info_: UnitInfo) -> UnitInfo:
-    return unit_info[explicit_unit_name] if explicit_unit_name else unit_info_
+    return get_unit_info(explicit_unit_name) if explicit_unit_name else unit_info_
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 import cmk.utils.resulttype as result
@@ -17,51 +18,56 @@ from cmk.utils.exceptions import (
     MKTimeout,
 )
 from cmk.utils.hostaddress import HostAddress, HostName
-from cmk.utils.piggyback import get_piggyback_raw_data, PiggybackTimeSettings
-
-from cmk.fetchers import FetcherType
+from cmk.utils.piggyback import PiggybackFileInfo, PiggybackTimeSettings
+from cmk.utils.sectionname import SectionName
 
 from cmk.checkengine.checkresults import ActiveCheckResult
 from cmk.checkengine.exitspec import ExitSpec
-from cmk.checkengine.fetcher import SourceInfo
-from cmk.checkengine.parser import HostSections
+from cmk.checkengine.fetcher import FetcherType, SourceInfo
+from cmk.checkengine.parser import AgentRawDataSection, HostSections
 
-__all__ = ["summarize", "SummarizerFunction"]
+__all__ = ["summarize", "SummarizerFunction", "SummaryConfig"]
+
+
+@dataclass(frozen=True)
+class SummaryConfig:
+    """User config for summary."""
+
+    exit_spec: ExitSpec
+    time_settings: PiggybackTimeSettings
+    expect_data: bool
 
 
 class SummarizerFunction(Protocol):
     def __call__(
         self,
         host_sections: Iterable[tuple[SourceInfo, result.Result[HostSections, Exception]]],
-    ) -> Iterable[ActiveCheckResult]:
-        ...
+    ) -> Iterable[ActiveCheckResult]: ...
 
 
 def summarize(
     hostname: HostName,
     ipaddress: HostAddress | None,
     host_sections: result.Result[HostSections, Exception],
+    config: SummaryConfig,
     *,
-    exit_spec: ExitSpec,
-    time_settings: PiggybackTimeSettings,
-    # TODO(ml): Check if the next two parameters are redundant.
     fetcher_type: FetcherType,
-    is_piggyback: bool,
 ) -> Sequence[ActiveCheckResult]:
     if fetcher_type is FetcherType.PIGGYBACK:
         return host_sections.fold(
-            ok=lambda _: summarize_piggyback(
+            ok=lambda host_sections: summarize_piggyback(
+                host_sections=host_sections,
                 hostname=hostname,
                 ipaddress=ipaddress,
-                time_settings=time_settings,
-                is_piggyback=is_piggyback,
+                time_settings=config.time_settings,
+                expect_data=config.expect_data,
             ),
-            error=lambda exc: summarize_failure(exit_spec, exc),
+            error=lambda exc: summarize_failure(config.exit_spec, exc),
         )
 
     return host_sections.fold(
-        ok=lambda _: summarize_success(exit_spec),
-        error=lambda exc: summarize_failure(exit_spec, exc),
+        ok=lambda _: summarize_success(config.exit_spec),
+        error=lambda exc: summarize_failure(config.exit_spec, exc),
     )
 
 
@@ -96,23 +102,19 @@ def summarize_failure(exit_spec: ExitSpec, exc: Exception) -> Sequence[ActiveChe
 
 def summarize_piggyback(
     *,
+    host_sections: HostSections[AgentRawDataSection],
     hostname: HostName,
     ipaddress: HostAddress | None,
     time_settings: PiggybackTimeSettings,
-    # Tag: 'Always use and expect piggback data'
-    is_piggyback: bool,
+    expect_data: bool,
 ) -> Sequence[ActiveCheckResult]:
-    if sources := [
-        source
-        for origin in (hostname, ipaddress)
-        # TODO(ml): The code uses `get_piggyback_raw_data()` instead of
-        # `HostSections.piggyback_raw_data` because this allows it to
-        # sneakily use cached data.  At minimum, we should group all cache
-        # handling performed after the parser.
-        for source in get_piggyback_raw_data(origin, time_settings)
+    summary_section = SectionName("piggyback_source_summary")
+    if meta_infos := [
+        PiggybackFileInfo.deserialize(raw_file_info)
+        for (raw_file_info,) in host_sections.sections.get(summary_section, [])
     ]:
-        return [ActiveCheckResult(src.info.status, src.info.message) for src in sources]
+        return [ActiveCheckResult(info.status, info.message) for info in meta_infos]
 
-    if is_piggyback:
+    if expect_data:
         return [ActiveCheckResult(1, "Missing data")]
     return [ActiveCheckResult(0, "Success (but no data found for this host)")]

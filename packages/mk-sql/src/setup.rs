@@ -16,15 +16,31 @@ use std::path::{Path, PathBuf};
 pub struct Env {
     /// guaranteed to contain dir or None
     temp_dir: Option<PathBuf>,
+
     /// guaranteed to contain dir or None
     log_dir: Option<PathBuf>,
+
+    /// guaranteed to contain dir or None
+    state_dir: Option<PathBuf>,
+
+    ///
+    disable_caching: bool,
 }
 
 impl Env {
     pub fn new(args: &Args) -> Self {
         let log_dir = Env::build_dir(&args.log_dir, &constants::ENV_LOG_DIR.as_deref());
         let temp_dir = Env::build_dir(&args.temp_dir, &constants::ENV_TEMP_DIR.as_deref());
-        Self { temp_dir, log_dir }
+        #[cfg(windows)]
+        let state_dir = Env::build_dir(&args.state_dir, &constants::ENV_STATE_DIR.as_deref());
+        #[cfg(unix)]
+        let state_dir = Env::build_dir(&args.state_dir, &constants::ENV_VAR_DIR.as_deref());
+        Self {
+            temp_dir,
+            log_dir,
+            state_dir,
+            disable_caching: args.no_spool,
+        }
     }
 
     /// guaranteed to return temp dir or None
@@ -37,9 +53,19 @@ impl Env {
         self.log_dir.as_deref()
     }
 
+    /// guaranteed to return log dir or None
+    pub fn state_dir(&self) -> Option<&Path> {
+        self.state_dir.as_deref()
+    }
+
+    pub fn disable_caching(&self) -> bool {
+        self.disable_caching
+    }
+
     /// guaranteed to return cache dir or None
     pub fn cache_dir(&self) -> Option<PathBuf> {
-        self.temp_dir().map(|temp_dir| temp_dir.join("cache"))
+        self.state_dir()
+            .map(|state_dir| state_dir.join("mk-sql-cache"))
     }
 
     fn build_dir(dir: &Option<PathBuf>, fallback: &Option<&Path>) -> Option<PathBuf> {
@@ -93,11 +119,14 @@ pub fn init(args: ArgsOs) -> Result<(CheckConfig, Env)> {
         .unwrap_or(None);
     let environment = Env::new(&args);
     init_logging(&args, &environment, logging_config)?;
+    if !config_file.exists() {
+        anyhow::bail!("The config file {:?} doesn't exist", config_file);
+    }
     Ok((get_check_config(&config_file)?, environment))
 }
 
 fn init_logging(args: &Args, environment: &Env, logging: Option<Logging>) -> Result<()> {
-    let l = logging.unwrap_or(Logging::default());
+    let l = logging.unwrap_or_default();
     let level = args.logging_level().unwrap_or_else(|| l.level());
     let send_to = if args.display_log {
         SendTo::Stderr
@@ -105,8 +134,35 @@ fn init_logging(args: &Args, environment: &Env, logging: Option<Logging>) -> Res
         SendTo::Null
     };
 
-    apply_logging_parameters(level, environment.log_dir(), send_to, l)?;
-    Ok(())
+    let s = apply_logging_parameters(level, environment.log_dir(), send_to, l).map(|_| ());
+    log_info_optional(args, level, environment, s.is_ok());
+    s
+}
+
+fn log_info_optional(args: &Args, level: log::Level, environment: &Env, log_available: bool) {
+    if args.print_info {
+        let info = create_info_text(&level, environment);
+        if log_available {
+            log::info!("{}", info);
+        } else {
+            println!("{}", info);
+        }
+    }
+}
+fn create_info_text(level: &log::Level, environment: &Env) -> String {
+    format!(
+        "\n  - Log level: {}\n  - Log dir: {}\n  - Temp dir: {}\n  - MK_CONFDIR: {}",
+        level,
+        environment
+            .log_dir()
+            .unwrap_or_else(|| Path::new(""))
+            .display(),
+        environment
+            .temp_dir()
+            .unwrap_or_else(|| Path::new("."))
+            .display(),
+        constants::get_env_value(constants::environment::CONFIG_DIR_ENV_VAR, "undefined"),
+    )
 }
 
 fn get_check_config(file: &Path) -> Result<CheckConfig> {
@@ -199,15 +255,16 @@ mod tests {
         let args = Args {
             log_dir: Some(PathBuf::from(".")),
             temp_dir: Some(PathBuf::from(".")),
+            state_dir: Some(PathBuf::from(".")),
             ..Default::default()
         };
         let e = Env::new(&args);
         assert_eq!(e.log_dir(), Some(Path::new(".")));
         assert_eq!(e.temp_dir(), Some(Path::new(".")));
-        assert_eq!(e.cache_dir(), Some(PathBuf::from(".").join("cache")));
+        assert_eq!(e.cache_dir(), Some(PathBuf::from(".").join("mk-sql-cache")));
         assert_eq!(
             e.calc_cache_sub_dir("aa"),
-            Some(PathBuf::from(".").join("cache").join("aa"))
+            Some(PathBuf::from(".").join("mk-sql-cache").join("aa"))
         );
     }
     #[test]
@@ -223,5 +280,16 @@ mod tests {
         assert!(e.cache_dir().is_none());
         assert!(e.calc_cache_sub_dir("aa").is_none());
         assert!(e.obtain_cache_sub_dir("a").is_none());
+    }
+    #[test]
+    fn test_create_info_text() {
+        assert_eq!(
+            create_info_text(&log::Level::Debug, &Env::new(&Args::default())),
+            r#"
+  - Log level: DEBUG
+  - Log dir: 
+  - Temp dir: .
+  - MK_CONFDIR: undefined"#
+        );
     }
 }

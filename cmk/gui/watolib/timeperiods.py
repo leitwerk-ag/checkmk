@@ -3,7 +3,7 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-from typing import Callable
+from collections.abc import Callable
 
 from cmk.utils.plugin_registry import Registry
 from cmk.utils.timeperiod import builtin_timeperiods, load_timeperiods
@@ -82,7 +82,7 @@ def save_timeperiods(timeperiods: TimeperiodSpecs) -> None:
     _load_timeperiods.cache_clear()  # type: ignore[attr-defined]
 
 
-def modify_timeperiod(name: str, timeperiod: TimeperiodSpec) -> None:  # type: ignore[no-untyped-def]
+def modify_timeperiod(name: str, timeperiod: TimeperiodSpec) -> None:
     existing_timeperiods = _load_timeperiods()
     if name not in existing_timeperiods:
         raise TimePeriodNotFoundError()
@@ -92,7 +92,7 @@ def modify_timeperiod(name: str, timeperiod: TimeperiodSpec) -> None:  # type: i
     _changes.add_change("edit-timeperiods", _("Modified time period %s") % name)
 
 
-def create_timeperiod(name: str, timeperiod: TimeperiodSpec) -> None:  # type: ignore[no-untyped-def]
+def create_timeperiod(name: str, timeperiod: TimeperiodSpec) -> None:
     existing_timeperiods = _load_timeperiods()
     if name in existing_timeperiods:
         raise TimePeriodAlreadyExistsError()
@@ -102,15 +102,23 @@ def create_timeperiod(name: str, timeperiod: TimeperiodSpec) -> None:  # type: i
     _changes.add_change("edit-timeperiods", _("Created new time period %s") % name)
 
 
-def verify_timeperiod_name_exists(name):
+def verify_timeperiod_name_exists(name: str) -> bool:
     existing_timperiods = _load_timeperiods()
     return name in existing_timperiods
 
 
 class TimeperiodSelection(DropdownChoice[str]):
-    def __init__(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
-        kwargs.setdefault("no_preselect_title", _("Select a time period"))
-        super().__init__(choices=self._get_choices, **kwargs)
+    def __init__(
+        self,
+        title: str | None = None,
+        help: str | None = None,  # pylint: disable=redefined-builtin
+    ) -> None:
+        super().__init__(
+            choices=self._get_choices,
+            title=title,
+            help=help,
+            no_preselect_title=_("Select a time period"),
+        )
 
     def _get_choices(self) -> list[tuple[str, str]]:
         timeperiods = _load_timeperiods()

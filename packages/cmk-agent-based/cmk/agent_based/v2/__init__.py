@@ -7,20 +7,27 @@ New in this version
 -------------------
 
 This section lists the most important changes you have to be
-aware of when migrating your plugin to this API version.
+aware of when migrating your plug-in to this API version.
 
 Note that changes are expressed in relation to the API version 1.
 
 You can find a script in `doc/treasures/migration_helpers/` that
 will do most of the migration for you.
 
+`type_defs` module is dissolved
+*******************************
+The `type_defs` module has been dissolved.
+All types are now directly imported from the `v2` module.
 
-`check_levels` renamed to `check_levels_fixed`
-**********************************************
+`check_levels` signature changed
+********************************
 
-This renaming allows us to provide a new `check_levels` function,
-that is particularly designed to work well with the `Levels` element
-from the new `rulesets API v1`.
+The new :func:`check_levels` function is designed to work well with the
+levels elements from the new `rulesets API v1`.
+These can be found in :mod:`cmk.rulesets.v1.form_specs`.
+
+The types of the arguments have been added to the API and can be found in
+:mod:`cmk.agent_based.v2`.
 
 
 Registration is replaced by a discovery approach
@@ -30,6 +37,7 @@ This is the main reason for the introduction of this new API version.
 Plugins are no longer registered during import, but only created and
 picked up later by the backend.
 To realize this, we introduced four new classes:
+
 * :class:`AgentSection` replacing :func:`register.agent_section`
 * :class:`SimpleSNMPSection` and :class:`SNMPSection` replacing :func:`register.snmp_section`
 * :class:`Checkplugin` replacing :func:`register.check_plugin`
@@ -61,7 +69,7 @@ On popular demand we add a function to render a number of seconds that might be 
 """
 # pylint: disable=duplicate-code
 
-from ..v1 import (
+from cmk.agent_based.v1 import (
     all_of,
     any_of,
     Attributes,
@@ -69,7 +77,6 @@ from ..v1 import (
     endswith,
     equals,
     exists,
-    get_average,
     get_rate,
     get_value_store,
     GetRateError,
@@ -95,13 +102,33 @@ from ..v1 import (
     State,
     TableRow,
 )
-from ..v1._detection import SNMPDetectSpecification  # sorry
-from ..v1.register import RuleSetType
-from . import clusterize, render, type_defs
-from ._check_levels import check_levels
-from ._plugins import AgentSection, CheckPlugin, InventoryPlugin, SimpleSNMPSection, SNMPSection
+from cmk.agent_based.v1._detection import SNMPDetectSpecification  # sorry
+from cmk.agent_based.v1.register import RuleSetType
+from cmk.agent_based.v1.type_defs import (
+    CheckResult,
+    DiscoveryResult,
+    HostLabelGenerator,
+    InventoryResult,
+)
+
+from . import clusterize, render
+from ._check_levels import check_levels, FixedLevelsT, LevelsT, NoLevelsT, PredictiveLevelsT
+from ._get_average import get_average
+from ._plugins import (
+    AgentSection,
+    CheckPlugin,
+    entry_point_prefixes,
+    InventoryPlugin,
+    SimpleSNMPSection,
+    SNMPSection,
+)
+
+StringTable = list[list[str]]
+StringByteTable = list[list[str | list[int]]]
+
 
 __all__ = [
+    "entry_point_prefixes",
     # the order is relevant for the sphinx doc!
     "AgentSection",
     "CheckPlugin",
@@ -109,6 +136,12 @@ __all__ = [
     "SimpleSNMPSection",
     "SNMPDetectSpecification",
     "InventoryPlugin",
+    "CheckResult",
+    "DiscoveryResult",
+    "HostLabelGenerator",
+    "InventoryResult",
+    "StringByteTable",
+    "StringTable",
     # begin with section stuff
     "all_of",
     "any_of",
@@ -126,6 +159,10 @@ __all__ = [
     "not_startswith",
     "Attributes",
     "check_levels",
+    "LevelsT",
+    "FixedLevelsT",
+    "NoLevelsT",
+    "PredictiveLevelsT",
     "clusterize",
     "get_average",
     "get_rate",
@@ -145,6 +182,5 @@ __all__ = [
     "SNMPTree",
     "State",
     "TableRow",
-    "type_defs",
     "GetRateError",
 ]

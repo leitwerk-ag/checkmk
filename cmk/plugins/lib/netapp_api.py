@@ -4,11 +4,11 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
-from typing import Any, Literal, NamedTuple
-
-from typing_extensions import TypedDict
+from typing import Any, Literal, NamedTuple, TypedDict
 
 from cmk.agent_based.v2 import (
+    CheckResult,
+    DiscoveryResult,
     get_rate,
     GetRateError,
     IgnoreResultsError,
@@ -17,8 +17,8 @@ from cmk.agent_based.v2 import (
     Result,
     Service,
     State,
+    StringTable,
 )
-from cmk.agent_based.v2.type_defs import CheckResult, DiscoveryResult, StringTable
 from cmk.plugins.lib import interfaces
 from cmk.plugins.lib.df import df_check_filesystem_single
 
@@ -420,7 +420,7 @@ def merge_if_sections(  # pylint: disable=too-many-branches
     virtual_interfaces: Sequence[str],
 ) -> IfSection:
     nics = []
-    extra_info: MutableMapping[str, NICExtraInfo] = {}
+    extra_info: dict[str, NICExtraInfo] = {}
     for idx, (nic_name, values) in enumerate(sorted(interfaces_section.items())):
         speed = values.get("speed", 0)
 
@@ -568,9 +568,11 @@ def check_netapp_interfaces(  # pylint: disable=too-many-branches
                         fop["link-status"] != "up" and fop["node"] == vif["home_node"]
                         for fop in vif["failover_ports"]
                     )
-                    else State.WARN
-                    if any(fop["link-status"] != "up" for fop in vif["failover_ports"])
-                    else State.OK
+                    else (
+                        State.WARN
+                        if any(fop["link-status"] != "up" for fop in vif["failover_ports"])
+                        else State.OK
+                    )
                 ),
                 notice=f"Failover Group: [{failover_group_str}]",
             )
@@ -591,14 +593,14 @@ def check_netapp_interfaces(  # pylint: disable=too-many-branches
                         summary="Physical interfaces: %s(%s)"
                         % (
                             member_name,
-                            interfaces.statename(member_state),
+                            interfaces.get_if_state_name(member_state),
                         ),
                     )
                     first_member = False
                 else:
                     yield Result(
                         state=State(mon_state),
-                        summary=f"{member_name}({interfaces.statename(member_state)})",
+                        summary=f"{member_name}({interfaces.get_if_state_name(member_state)})",
                     )
 
         if "speed_differs" in vif and speed_info_included:

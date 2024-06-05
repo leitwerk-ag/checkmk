@@ -8,8 +8,7 @@ from collections.abc import Mapping, MutableMapping
 from typing import Any
 
 from cmk.agent_based.v1 import check_levels
-from cmk.agent_based.v2 import get_average, get_rate, Metric, render
-from cmk.agent_based.v2.type_defs import CheckResult
+from cmk.agent_based.v2 import CheckResult, get_average, get_rate, Metric, render
 
 Levels = tuple[float, float]
 
@@ -83,8 +82,10 @@ def size_trend(
     Yields:
       Result- and Metric- instances for the trend computation.
     """
+    if (range_levels := levels.get("trend_range")) is None:
+        return
 
-    range_sec = levels["trend_range"] * SEC_PER_H
+    range_sec = range_levels * SEC_PER_H
     timestamp = timestamp or time.time()
 
     mb_per_sec = get_rate(value_store, "%s.delta" % value_store_key, timestamp, used_mb)
@@ -142,14 +143,13 @@ def size_trend(
             ),
         )
 
-    if mb_in_range > 0 and not math.isinf(value := (size_mb - used_mb) / mb_in_range):
+    # CMK-13217: size_mb - used_mb < 0: the device reported nonsense, resulting in a crash:
+    # ValueError("Cannot render negative timespan")
+    free_space = max(size_mb - used_mb, 0)
+
+    if mb_in_range > 0 and not math.isinf(value := free_space / mb_in_range):
         yield from check_levels(
-            # CMK-13217: size_mb - used_mb < 0: the device reported nonsense, resulting in a crash:
-            # ValueError("Cannot render negative timespan")
-            max(
-                value * range_sec / SEC_PER_H,
-                0,
-            ),
+            value * range_sec / SEC_PER_H,
             levels_lower=levels.get("trend_timeleft"),
             metric_name="trend_hoursleft" if "trend_showtimeleft" in levels else None,
             render_func=lambda x: render.timespan(x * SEC_PER_H),

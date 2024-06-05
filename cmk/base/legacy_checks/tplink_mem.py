@@ -7,8 +7,7 @@
 from cmk.base.check_api import check_levels, LegacyCheckDefinition
 from cmk.base.config import check_info
 
-from cmk.agent_based.v2 import render, SNMPTree
-from cmk.agent_based.v2.type_defs import StringTable
+from cmk.agent_based.v2 import render, SNMPTree, StringTable
 from cmk.plugins.lib.tplink import DETECT_TPLINK
 
 
@@ -55,4 +54,5 @@ check_info["tplink_mem"] = LegacyCheckDefinition(
     discovery_function=inventory_tplink_mem,
     check_function=check_tplink_mem,
     check_ruleset_name="memory_percentage_used",
+    check_default_parameters={"levels": None},
 )

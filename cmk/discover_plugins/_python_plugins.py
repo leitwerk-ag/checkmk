@@ -4,8 +4,9 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 import importlib
 import os
+import sys
 from collections import defaultdict
-from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -16,16 +17,14 @@ from ._wellknown import CMK_ADDONS_PLUGINS, CMK_PLUGINS, PluginGroup
 
 class _PluginProtocol(Protocol):
     @property
-    def name(self) -> Hashable:
-        ...
+    def name(self) -> Hashable: ...
 
 
 _PluginType = TypeVar("_PluginType", bound=_PluginProtocol)
 
 
 class _ImporterProtocol(Protocol):
-    def __call__(self, module_name: str, raise_errors: bool) -> ModuleType | None:
-        ...
+    def __call__(self, module_name: str, raise_errors: bool) -> ModuleType | None: ...
 
 
 @dataclass(frozen=True)
@@ -62,7 +61,7 @@ def discover_plugins(
 def _ls_defensive(path: str) -> Sequence[str]:
     try:
         return list(os.listdir(path))
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return []
 
 
@@ -99,7 +98,7 @@ def discover_modules(
     modules: Iterable[ModuleType] | None = None,
     ls: Callable[[str], Iterable[str]] = _ls_defensive,
 ) -> Iterable[str]:
-    """Discover all potetial plugin modules blow `modules`.
+    """Discover all potetial plug-in modules blow `modules`.
 
     Returned iterable should be deduplicated.
     """
@@ -121,7 +120,7 @@ def plugins_local_path() -> Path:
 
     Currently there is always exactly one.
     """
-    return Path(next(_writable_module_paths(CMK_PLUGINS)))
+    return Path(_first_writable_safe_python_path(), *CMK_PLUGINS.split("."))
 
 
 def addons_plugins_local_path() -> Path:
@@ -129,12 +128,15 @@ def addons_plugins_local_path() -> Path:
 
     Currently there is always exactly one.
     """
-    return Path(next(_writable_module_paths(CMK_ADDONS_PLUGINS)))
+    return Path(_first_writable_safe_python_path(), *CMK_ADDONS_PLUGINS.split("."))
 
 
-def _writable_module_paths(m_name: str) -> Iterator[str]:
-    """Return the writable module paths"""
-    return (p for p in importlib.import_module(m_name).__path__ if os.access(p, os.W_OK))
+def _first_writable_safe_python_path() -> str:
+    """Return the best guess for the `local` path
+
+    It's the first writable path in sys.path, omitting '.'.
+    """
+    return next(p for p in sys.path if p and os.access(p, os.W_OK))
 
 
 _T = TypeVar("_T")
@@ -166,7 +168,7 @@ class Collector(Generic[_PluginType]):
         plugin_prefixes: Mapping[type[_PluginType], str],
         raise_errors: bool,
     ) -> None:
-        # Transform plugin types / prefixes to the data structure we
+        # Transform plug-in types / prefixes to the data structure we
         # need for this algorithm.
         # We pass them differently to help the type inference along.
         # Other approaches require even worse explicit type annotations
@@ -190,7 +192,8 @@ class Collector(Generic[_PluginType]):
         try:
             module = importer(mod_name, raise_errors=True)
         except Exception as exc:
-            self._handle_error(exc)
+            exc_sub = type(exc)(f"{mod_name}: {exc}")
+            self._handle_error(exc_sub)
             return
 
         if module is None:
@@ -221,7 +224,7 @@ class Collector(Generic[_PluginType]):
             if (existing := self._unique_plugins.get(key)) is not None:
                 self._handle_error(
                     ValueError(
-                        f"{location}: plugin '{value.name}' already defined at {existing[0]}"
+                        f"{location}: plug-in '{value.name}' already defined at {existing[0]}"
                     )
                 )
 

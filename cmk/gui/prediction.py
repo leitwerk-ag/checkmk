@@ -25,7 +25,7 @@ from cmk.utils.metrics import MetricName
 from cmk.utils.prediction import estimate_levels, PredictionData, PredictionQuerier
 from cmk.utils.servicename import ServiceName
 
-import cmk.gui.sites as sites
+from cmk.gui import sites
 from cmk.gui.htmllib.header import make_header
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request as request_
@@ -131,12 +131,16 @@ def _select_prediction(
 
     return _Predictions(
         title=selected_title,
-        upper=None
-        if (meta := selected_prediction_infos.get("upper")) is None
-        else (meta, querier.query_prediction_data(meta)),
-        lower=None
-        if (meta := selected_prediction_infos.get("lower")) is None
-        else (meta, querier.query_prediction_data(meta)),
+        upper=(
+            None
+            if (meta := selected_prediction_infos.get("upper")) is None
+            else (meta, querier.query_prediction_data(meta))
+        ),
+        lower=(
+            None
+            if (meta := selected_prediction_infos.get("lower")) is None
+            else (meta, querier.query_prediction_data(meta))
+        ),
     )
 
 
@@ -155,7 +159,7 @@ def _available_predictions(
 
 
 def page_graph() -> None:
-    host_name = HostName(request_.get_str_input_mandatory("host"))
+    host_name = request_.get_validated_type_input_mandatory(HostName, "host")
     service_name = ServiceName(request_.get_str_input_mandatory("service"))
     metric_name = MetricName(request_.get_str_input_mandatory("dsname"))
     livestatus_connection = live().get_connection(SiteId(request_.get_str_input_mandatory("site")))
@@ -223,13 +227,13 @@ def _make_prediction_title(meta: PredictionInfo) -> str:
     date_str = time.strftime("%Y-%m-%d", time.localtime(meta.valid_interval[0]))
     match meta.params.period:
         case "wday":
-            return "%s (%s)" % (date_str, _("day of the week"))
+            return "{} ({})".format(date_str, _("day of the week"))
         case "day":
-            return "%s (%s)" % (date_str, _("day of the month"))
+            return "{} ({})".format(date_str, _("day of the month"))
         case "hour":
-            return "%s (%s)" % (date_str, _("hour of the day"))
+            return "{} ({})".format(date_str, _("hour of the day"))
         case "minute":
-            return "%s (%s)" % (date_str, _("minute of the hour"))
+            return "{} ({})".format(date_str, _("minute of the hour"))
 
 
 def _make_legend(current_measurement: tuple[float, float] | None) -> Sequence[tuple[Color, str]]:
@@ -248,7 +252,7 @@ def _make_legend(current_measurement: tuple[float, float] | None) -> Sequence[tu
 
 def _render_grid(x_range: tuple[int, int], y_range: tuple[float, float]) -> None:
     x_scala = [
-        (i + x_range[0], f"{i//3600:02}:{i%3600:02}")
+        (i + x_range[0], f"{i // 3600:02}:{i % 3600:02}")
         for i in range(0, x_range[1] - x_range[0] + 1, 7200)
     ]
     y_scala = _compute_vertical_scala(*y_range)
@@ -380,9 +384,13 @@ def _make_prediction_curves(
 
     warn, crit = [], []
     for levels in (
-        estimate_levels(p.average, p.stdev, meta.direction, meta.params.levels, meta.params.bound)
-        if p
-        else None
+        (
+            estimate_levels(
+                p.average, p.stdev, meta.direction, meta.params.levels, meta.params.bound
+            )
+            if p
+            else None
+        )
         for p in predictions
     ):
         warn.append(levels[0] if levels else None)
@@ -429,7 +437,7 @@ def _create_graph(
         "",
         class_="prediction",
         id_=canvas_id,
-        style=f"width: {size[0]//2}px; height: {size[1]//2}px;",
+        style=f"width: {size[0] // 2}px; height: {size[1] // 2}px;",
         width=str(size[0]),
         height=str(size[1]),
     )
@@ -448,20 +456,24 @@ def _create_graph(
     )
 
 
-def _render_coordinates(v_scala, t_scala) -> None:  # type: ignore[no-untyped-def]
+def _render_coordinates(
+    v_scala: Sequence[tuple[float, str]], t_scala: Sequence[tuple[int, str]]
+) -> None:
     html.javascript(
         f"cmk.prediction.render_coordinates({json.dumps(v_scala)}, {json.dumps(t_scala)});"
     )
 
 
-def _render_curve(points, color, width=1, square=False) -> None:  # type: ignore[no-untyped-def]
+def _render_curve(
+    points: Sequence[float | None], color: str, width: int = 1, square: bool = False
+) -> None:
     html.javascript(
         "cmk.prediction.render_curve(%s, %s, %d, %d);"
         % (json.dumps(points), json.dumps(color), width, square and 1 or 0)
     )
 
 
-def _render_point(t, v, color) -> None:  # type: ignore[no-untyped-def]
+def _render_point(t: float, v: float, color: str) -> None:
     html.javascript(
         f"cmk.prediction.render_point({json.dumps(t)}, {json.dumps(v)}, {json.dumps(color)});"
     )

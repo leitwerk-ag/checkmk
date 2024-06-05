@@ -191,7 +191,7 @@ def check_windows_tasks(
     data = section[item]
     last_result = data["Last Result"]
 
-    # schtasks.exe (used by the check plugin) returns a signed integer
+    # schtasks.exe (used by the check plug-in) returns a signed integer
     # e.g. -2147024629. However, error codes are unsigned integers.
     # To make it easier for the user to lookup the error code (e.g. on
     # MSDN) we convert the negative numbers to the hexadecimal
@@ -205,9 +205,9 @@ def check_windows_tasks(
     )
     yield Result(
         state=State(state),
-        summary=f"{state_txt} ({last_result_hex})"
-        if state_txt
-        else f"Got exit code {last_result_hex}",
+        summary=(
+            f"{state_txt} ({last_result_hex})" if state_txt else f"Got exit code {last_result_hex}"
+        ),
     )
 
     if data.get("Scheduled Task State", None) != "Enabled":

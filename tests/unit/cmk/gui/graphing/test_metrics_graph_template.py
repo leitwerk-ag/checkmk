@@ -11,6 +11,7 @@ from cmk.utils.exceptions import MKGeneralException
 from cmk.utils.hostaddress import HostName
 
 import cmk.gui.graphing._graph_templates as gt
+from cmk.gui.config import active_config
 from cmk.gui.graphing._expression import (
     Constant,
     CriticalOf,
@@ -87,7 +88,9 @@ from cmk.gui.metrics import translate_perf_data
 )
 def test_rpn_stack(expression: str, result: MetricOperation) -> None:
     translated_metrics = translate_perf_data(
-        "/=163651.992188;;;; fs_size=477500.03125;;;; growth=-1280.489081;;;;", "check_mk-df"
+        "/=163651.992188;;;; fs_size=477500.03125;;;; growth=-1280.489081;;;;",
+        config=active_config,
+        check_command="check_mk-df",
     )
     lq_row = {"site": "", "host_name": "", "service_description": ""}
     assert (
@@ -123,11 +126,11 @@ def test_create_graph_recipe_from_template() -> None:
         ],
         scalars=[
             ScalarDefinition(
-                expression=WarningOf(Metric(("fs_used"))),
+                expression=WarningOf(Metric("fs_used")),
                 title="Warning",
             ),
             ScalarDefinition(
-                expression=CriticalOf(Metric(("fs_used"))),
+                expression=CriticalOf(Metric("fs_used")),
                 title="Critical",
             ),
         ],
@@ -138,7 +141,9 @@ def test_create_graph_recipe_from_template() -> None:
         omit_zero_metrics=False,
     )
     translated_metrics = translate_perf_data(
-        "/=163651.992188;;;; fs_size=477500.03125;;;; growth=-1280.489081;;;;", "check_mk-df"
+        "/=163651.992188;;;; fs_size=477500.03125;;;; growth=-1280.489081;;;;",
+        config=active_config,
+        check_command="check_mk-df",
     )
     lq_row = {"site": "", "host_name": "", "service_description": ""}
     specification = TemplateGraphSpecification(
@@ -227,7 +232,7 @@ def test_create_graph_recipe_from_template() -> None:
             "load15",
             "load1=0.38;40;80;0;8 load5=0.62;40;80;0;8 load15=0.68;40;80;0;8",
             "check_mk-cpu.loads",
-            "#0000a3",
+            "#1e1ec8",
         ),
         ("test", "test=5;5;10;0;20", "check_mk-local", "#cc00ff"),
     ],
@@ -235,7 +240,9 @@ def test_create_graph_recipe_from_template() -> None:
 def test_metric_unit_color(
     expression: str, perf_string: str, check_command: str | None, result_color: str
 ) -> None:
-    translated_metrics = translate_perf_data(perf_string, check_command)
+    translated_metrics = translate_perf_data(
+        perf_string, config=active_config, check_command=check_command
+    )
     translated_metric = translated_metrics.get(expression)
     assert translated_metric is not None
     unit = translated_metric.get("unit")
@@ -261,7 +268,9 @@ def test_metric_unit_color(
 def test_metric_unit_color_skip(
     expression: str, perf_string: str, check_command: str | None
 ) -> None:
-    translated_metrics = translate_perf_data(perf_string, check_command)
+    translated_metrics = translate_perf_data(
+        perf_string, config=active_config, check_command=check_command
+    )
     metric_definition = MetricDefinition(
         expression=parse_expression(expression, translated_metrics),
         line_type="line",
@@ -278,7 +287,9 @@ def test_metric_unit_color_skip(
 def test_metric_unit_color_exception(
     expression: str, perf_string: str, check_command: str | None
 ) -> None:
-    translated_metrics = translate_perf_data(perf_string, check_command)
+    translated_metrics = translate_perf_data(
+        perf_string, config=active_config, check_command=check_command
+    )
     metric_definition = MetricDefinition(
         expression=parse_expression(expression, translated_metrics),
         line_type="line",

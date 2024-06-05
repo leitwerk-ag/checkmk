@@ -6,8 +6,16 @@
 import time
 from collections.abc import Mapping
 
-from cmk.agent_based.v2 import AgentSection, CheckPlugin, get_value_store, render, Service
-from cmk.agent_based.v2.type_defs import CheckResult, DiscoveryResult, StringTable
+from cmk.agent_based.v2 import (
+    AgentSection,
+    CheckPlugin,
+    CheckResult,
+    DiscoveryResult,
+    get_value_store,
+    render,
+    Service,
+    StringTable,
+)
 from cmk.plugins.lib.netapp_api import check_netapp_vs_traffic
 from cmk.plugins.netapp import models
 
@@ -137,6 +145,8 @@ def check_netapp_ontap_vs_traffic(item: str, section: Section) -> CheckResult:
         "svm_nfs_v3": (
             "NFS",
             [
+                ("read_ops", "nfs_read_ios", "read OPs", 1, int),
+                ("write_ops", "nfs_write_ios", "write OPs", 1, int),
                 (
                     "read_throughput",
                     "nfs_read_throughput",

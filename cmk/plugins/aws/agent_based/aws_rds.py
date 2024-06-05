@@ -11,13 +11,15 @@ from cmk.agent_based.v1 import check_levels
 from cmk.agent_based.v2 import (
     AgentSection,
     CheckPlugin,
+    CheckResult,
+    DiscoveryResult,
     get_value_store,
     IgnoreResultsError,
     render,
     Result,
     State,
+    StringTable,
 )
-from cmk.agent_based.v2.type_defs import CheckResult, DiscoveryResult, StringTable
 from cmk.plugins.aws.lib import (
     aws_get_counts_rate_human_readable,
     aws_rds_service_item,
@@ -137,7 +139,7 @@ check_plugin_aws_rds_network_io = CheckPlugin(
     sections=["aws_rds"],
     service_name="AWS/RDS %s Network IO",
     discovery_function=discover_aws_rds_network_io,
-    check_ruleset_name="if",
+    check_ruleset_name="interfaces",
     check_default_parameters=interfaces.CHECK_DEFAULT_PARAMETERS,
     check_function=check_aws_rds_network_io,
 )

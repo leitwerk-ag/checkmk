@@ -22,9 +22,7 @@ import cmk.utils.paths
 import cmk.utils.version as cmk_version
 from cmk.utils.exceptions import MKGeneralException
 
-import cmk.gui.log as log
-import cmk.gui.utils as utils
-import cmk.gui.utils.escaping as escaping
+from cmk.gui import log, utils
 from cmk.gui.config import active_config
 from cmk.gui.ctx_stack import request_local_attr
 from cmk.gui.exceptions import MKUserError
@@ -42,10 +40,11 @@ from cmk.gui.type_defs import (
     GroupedChoices,
     Icon,
 )
+from cmk.gui.utils import escaping
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.output_funnel import OutputFunnel
 from cmk.gui.utils.popups import PopupMethod
-from cmk.gui.utils.theme import theme
+from cmk.gui.utils.theme import theme, Theme
 from cmk.gui.utils.transaction_manager import transactions
 from cmk.gui.utils.urls import doc_reference_url, DocReference, requested_file_name
 from cmk.gui.utils.user_errors import user_errors
@@ -89,9 +88,9 @@ def get_render_mode() -> ExperimentalRenderMode:
 
 
 def inject_js_profiling_code():
-    return active_config.experimental_features.get(
+    return active_config.inject_js_profiling_code or html.request.has_var(
         "inject_js_profiling_code"
-    ) or html.request.has_var("inject_js_profiling_code")
+    )
 
 
 EncType = typing.Literal[
@@ -265,9 +264,19 @@ class HTMLGenerator(HTMLWriter):
         # Load all scripts
         for js in javascripts:
             js_filepath = f"js/{js}_min.js"
-            if current_app.debug:
-                HTMLGenerator._verify_file_exists_in_web_dirs(js_filepath)
-            self.javascript_file(HTMLGenerator._append_cache_busting_query(js_filepath))
+            js_url = HTMLGenerator._append_cache_busting_query(js_filepath)
+            if js == "vue" and active_config.load_frontend_vue == "inject":
+                # stage1 will try to load the hot reloading files. if this fails,
+                # an error will be shown and the fallback files will be loaded.
+                self.js_entrypoint(
+                    json.dumps({"fallback": [js_url]}),
+                    type_="cmk-entrypoint-vue-stage1",
+                )
+                self.javascript_file(HTMLGenerator._append_cache_busting_query("js/vue_stage1.js"))
+            else:
+                if current_app.debug:
+                    HTMLGenerator._verify_file_exists_in_web_dirs(js_filepath)
+                self.javascript_file(js_url)
 
         self.set_js_csrf_token()
 
@@ -410,12 +419,13 @@ class HTMLGenerator(HTMLWriter):
             require_confirmation=require_confirmation,
         )
 
-        yield
-
-        if only_close:
-            html.close_form()
-        else:
-            html.end_form()
+        try:
+            yield
+        finally:
+            if only_close:
+                html.close_form()
+            else:
+                html.end_form()
 
     def begin_form(
         self,
@@ -680,9 +690,12 @@ class HTMLGenerator(HTMLWriter):
             title=title,
         )
 
-    def user_error(self, e: MKUserError) -> None:
+    def user_error(self, e: MKUserError, show_as_warning: bool = False) -> None:
         """Display the given MKUserError and store message for later use"""
-        self.show_error(str(e))
+        if show_as_warning:
+            self.show_warning(str(e))
+        else:
+            self.show_error(str(e))
         user_errors.add(e)
 
     def show_user_errors(self) -> None:
@@ -714,11 +727,10 @@ class HTMLGenerator(HTMLWriter):
         autocomplete: str | None = None,
         style: str | None = None,
         type_: str | None = None,
-        onkeyup: str | None = None,
+        oninput: str | None = None,
         onblur: str | None = None,
         placeholder: str | None = None,
-        data_world: str | None = None,
-        data_max_labels: int | None = None,
+        data_attrs: HTMLTagAttributes | None = None,
         required: bool = False,
         title: str | None = None,
     ) -> None:
@@ -730,6 +742,9 @@ class HTMLGenerator(HTMLWriter):
         if error:
             self.set_focus(varname)
         self.form_vars.append(varname)
+
+        if data_attrs is not None:
+            assert all(data_attr_key.startswith("data-") for data_attr_key in data_attrs.keys())
 
         # View
         # TODO: Move styling away from py code
@@ -743,14 +758,13 @@ class HTMLGenerator(HTMLWriter):
                 assert isinstance(size, int)
                 style_size = ["min-width: %d.8ex;" % size]
                 cssclass += " try_max_width"
+            elif size == "max":
+                style_size = ["width: 100%;"]
             else:
-                if size == "max":
-                    style_size = ["width: 100%;"]
-                else:
-                    assert isinstance(size, int)
-                    field_size = "%d" % (size + 1)
-                    if (style is None or "width:" not in style) and not self.mobile:
-                        style_size = ["width: %d.8ex;" % size]
+                assert isinstance(size, int)
+                field_size = "%d" % (size + 1)
+                if (style is None or "width:" not in style) and not self.mobile:
+                    style_size = ["width: %d.8ex;" % size]
 
         attributes: HTMLTagAttributes = {
             "class": cssclass,
@@ -761,15 +775,16 @@ class HTMLGenerator(HTMLWriter):
             "readonly": "true" if read_only else None,
             "value": value,
             "onblur": onblur,
-            "onkeyup": onkeyup,
-            "onkeydown": ("cmk.forms.textinput_enter_submit(event, %s);" % json.dumps(submit))
-            if submit
-            else None,
+            "oninput": oninput,
+            "onkeydown": (
+                ("cmk.forms.textinput_enter_submit(event, %s);" % json.dumps(submit))
+                if submit
+                else None
+            ),
             "placeholder": placeholder,
-            "data-world": data_world,
-            "data-max-labels": None if data_max_labels is None else str(data_max_labels),
             "required": "" if required else None,
             "title": title,
+            **(data_attrs or {}),
         }
 
         if error:
@@ -800,7 +815,7 @@ class HTMLGenerator(HTMLWriter):
         onclick: str | None,
         **attrs: HTMLTagAttributeValue,
     ) -> None:
-        """Shows a colored button with text (used in site and customer status snapins)"""
+        """Shows a colored button with text (used in site and customer status snap-ins)"""
         self.div(
             content,
             title=title,
@@ -1172,12 +1187,16 @@ class HTMLGenerator(HTMLWriter):
         self.write_html(HTMLGenerator.render_icon("trans"))
 
     @staticmethod
-    def render_icon(
+    def render_icon(  # pylint: disable=redefined-outer-name
         icon: Icon,
         title: str | None = None,
         id_: str | None = None,
         cssclass: str | None = None,
         class_: CSSSpec | None = None,
+        *,
+        # Temporary measure for not having to change all call-sites at once.
+        # The first step was to only change call sites from painters.
+        theme: Theme = theme,
     ) -> HTML:
         classes = ["icon"] + ([] if cssclass is None else [cssclass])
         if isinstance(class_, list):
@@ -1235,7 +1254,7 @@ class HTMLGenerator(HTMLWriter):
         )
 
     @staticmethod
-    def render_icon_button(
+    def render_icon_button(  # pylint: disable=redefined-outer-name
         url: None | str,
         title: str,
         icon: Icon,
@@ -1245,6 +1264,9 @@ class HTMLGenerator(HTMLWriter):
         target: str | None = None,
         cssclass: str | None = None,
         class_: CSSSpec | None = None,
+        # Temporary measure for not having to change all call-sites at once.
+        # The first step was to only change call sites from painters.
+        theme: Theme = theme,
     ) -> HTML:
         classes = [] if cssclass is None else [cssclass]
         if isinstance(class_, list):
@@ -1256,7 +1278,7 @@ class HTMLGenerator(HTMLWriter):
         assert href is not None
 
         return HTMLWriter.render_a(
-            content=HTML(HTMLGenerator.render_icon(icon, cssclass="iconbutton")),
+            content=HTML(HTMLGenerator.render_icon(icon, cssclass="iconbutton", theme=theme)),
             href=href,
             title=title,
             id_=id_,
@@ -1267,7 +1289,7 @@ class HTMLGenerator(HTMLWriter):
             onclick=onclick,
         )
 
-    def icon_button(
+    def icon_button(  # pylint: disable=redefined-outer-name
         self,
         url: str | None,
         title: str,
@@ -1278,10 +1300,13 @@ class HTMLGenerator(HTMLWriter):
         target: str | None = None,
         cssclass: str | None = None,
         class_: CSSSpec | None = None,
+        # Temporary measure for not having to change all call-sites at once.
+        # The first step was to only change call sites from painters.
+        theme: Theme = theme,
     ) -> None:
         self.write_html(
             HTMLGenerator.render_icon_button(
-                url, title, icon, id_, onclick, style, target, cssclass, class_
+                url, title, icon, id_, onclick, style, target, cssclass, class_, theme=theme
             )
         )
 
@@ -1462,13 +1487,11 @@ class HTMLGenerator(HTMLWriter):
 
 
 @overload
-def _path(path_or_str: Path) -> Path:
-    ...
+def _path(path_or_str: Path) -> Path: ...
 
 
 @overload
-def _path(path_or_str: str) -> Path:
-    ...
+def _path(path_or_str: str) -> Path: ...
 
 
 def _path(path_or_str: Path | str) -> Path:

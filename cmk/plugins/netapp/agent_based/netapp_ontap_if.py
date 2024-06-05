@@ -10,12 +10,14 @@ from typing import Any
 from cmk.agent_based.v2 import (
     AgentSection,
     CheckPlugin,
+    CheckResult,
+    DiscoveryResult,
     get_value_store,
     Result,
     RuleSetType,
     State,
+    StringTable,
 )
-from cmk.agent_based.v2.type_defs import CheckResult, DiscoveryResult, StringTable
 from cmk.plugins.lib import interfaces
 from cmk.plugins.lib.netapp_api import (
     check_netapp_interfaces,
@@ -108,7 +110,7 @@ def _merge_if_counters_sections(  # pylint: disable=too-many-branches
 
     """
 
-    if_mac_list: MutableMapping[str, MACList] = {}
+    if_mac_list: dict[str, MACList] = {}
     virtual_interfaces = []
 
     # collect broadcast ports for broadcast_domain and node
@@ -246,7 +248,7 @@ check_plugin_netapp_ontap_if = CheckPlugin(
     discovery_ruleset_type=RuleSetType.ALL,
     discovery_default_parameters=dict(interfaces.DISCOVERY_DEFAULT_PARAMETERS),
     discovery_function=discover_netapp_ontap_if,
-    check_ruleset_name="if",
+    check_ruleset_name="interfaces",
     check_default_parameters=interfaces.CHECK_DEFAULT_PARAMETERS,
     check_function=check_netapp_ontap_if,
 )

@@ -235,31 +235,6 @@ check_info["rabbitmq_nodes.sockets"] = LegacyCheckDefinition(
 )
 
 
-def check_rabbitmq_nodes_proc(item, params, parsed):
-    proc_data = parsed.get(item, {}).get("proc")
-    if not proc_data:
-        return None
-
-    used = proc_data.get("proc_used")
-    if used is None:
-        return None
-
-    total = proc_data.get("proc_total")
-    if total is None:
-        return None
-
-    return _handle_output(params, used, total, "Erlang processes used", "processes")
-
-
-check_info["rabbitmq_nodes.proc"] = LegacyCheckDefinition(
-    service_name="RabbitMQ Node %s Processes",
-    sections=["rabbitmq_nodes"],
-    discovery_function=discover_key("proc"),
-    check_function=check_rabbitmq_nodes_proc,
-    check_ruleset_name="rabbitmq_nodes_proc",
-)
-
-
 def check_rabbitmq_nodes_mem(item, params, parsed):
     mem_data = parsed.get(item, {}).get("mem")
     if not mem_data:
@@ -273,14 +248,14 @@ def check_rabbitmq_nodes_mem(item, params, parsed):
     if mem_mark is None:
         return
 
-    warn, crit = params.get("levels", (None, None))
-    mode = "abs_used" if isinstance(warn, int) else "perc_used"
+    levels = params.get("levels")
+    mode = "abs_used" if isinstance(levels, tuple) and isinstance(levels[0], int) else "perc_used"
 
     yield check_memory_element(
         "Memory used",
         mem_used,
         mem_mark,
-        (mode, (warn, crit)),
+        (mode, levels),
         label_total="High watermark",
         metric_name="mem_used",
     )
@@ -292,6 +267,7 @@ check_info["rabbitmq_nodes.mem"] = LegacyCheckDefinition(
     discovery_function=discover_key("mem"),
     check_function=check_rabbitmq_nodes_mem,
     check_ruleset_name="memory_multiitem",
+    check_default_parameters={"levels": None},
 )
 
 _UNITS_NODES_GC = {"gc_num_rate": "1/s"}

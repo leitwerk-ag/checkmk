@@ -17,13 +17,13 @@ else
 fi
 
 TARGET_DIR="${TARGET_DIR:-/opt}"
-OPENSSL_VERSION=3.0.12
+OPENSSL_VERSION=3.0.13
 OPENSSL_PATH="${TARGET_DIR}/openssl-${OPENSSL_VERSION}"
 DIR_NAME=Python-${PYTHON_VERSION}
 ARCHIVE_NAME=${DIR_NAME}.tgz
 
-# Increase this to enforce a recreation of the build cache
-BUILD_ID=10
+# Increase the numeric suffix to enforce a recreation of the build cache
+BUILD_ID="openssl-${OPENSSL_VERSION}-11"
 
 build_package() {
     mkdir -p "$TARGET_DIR/src"

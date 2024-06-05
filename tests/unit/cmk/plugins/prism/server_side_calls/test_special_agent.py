@@ -8,21 +8,11 @@ from collections.abc import Mapping, Sequence
 import pytest
 
 from cmk.plugins.prism.server_side_calls.special_agent import generate_prism_command
-from cmk.server_side_calls.v1 import (
-    HostConfig,
-    IPAddressFamily,
-    NetworkAddressConfig,
-    PlainTextSecret,
-    ResolvedIPAddressFamily,
-    StoredSecret,
-)
+from cmk.server_side_calls.v1 import HostConfig, IPv4Config, Secret
 
 HOST_CONFIG = HostConfig(
     name="host name",
-    resolved_address="address",
-    alias="host",
-    resolved_ip_family=ResolvedIPAddressFamily.IPV4,
-    address_config=NetworkAddressConfig(ip_family=IPAddressFamily.IPV4),
+    ipv4_config=IPv4Config(address="address"),
 )
 
 
@@ -30,42 +20,43 @@ HOST_CONFIG = HostConfig(
     ["params", "expected_args"],
     [
         pytest.param(
-            {"username": "", "password": ("password", "")},
+            {"username": "", "password": Secret(12), "no_cert_check": False},
             [
                 "--server",
                 "address",
                 "--username",
                 "",
                 "--password",
-                PlainTextSecret(value="", format="%s"),
+                Secret(12).unsafe(),
             ],
             id="explicit password and no port",
         ),
         pytest.param(
-            {"username": "userid", "password": ("password", "password"), "port": 9440},
+            {"username": "userid", "password": Secret(23), "no_cert_check": False, "port": 9440},
             [
                 "--server",
                 "address",
                 "--username",
                 "userid",
                 "--password",
-                PlainTextSecret(value="password", format="%s"),
+                Secret(23).unsafe(),
                 "--port",
                 "9440",
             ],
             id="explicit password and port",
         ),
         pytest.param(
-            {"username": "userid", "password": ("store", "prism"), "port": 9440},
+            {"username": "userid", "password": Secret(42), "no_cert_check": True, "port": 9440},
             [
                 "--server",
                 "address",
                 "--username",
                 "userid",
                 "--password",
-                StoredSecret(value="prism", format="%s"),
+                Secret(42).unsafe(),
                 "--port",
                 "9440",
+                "--no-cert-check",
             ],
             id="password from store and port",
         ),
@@ -73,5 +64,5 @@ HOST_CONFIG = HostConfig(
 )
 def test_prism_argument_parsing(params: Mapping[str, object], expected_args: Sequence[str]) -> None:
     """Tests if all required arguments are present."""
-    command = list(generate_prism_command(params, HOST_CONFIG, {}))[0]
+    command = list(generate_prism_command(params, HOST_CONFIG))[0]
     assert command.command_arguments == expected_args
