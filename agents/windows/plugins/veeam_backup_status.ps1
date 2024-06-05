@@ -66,7 +66,7 @@ foreach ($mycdpjobs in $cdpjobs)
 	$MyCdpJobsName = $mycdpjobs.Name -replace "\'","_" -replace " ","_"
 
 	$MyCdpJobsNextRun = $mycdpjobs.NextRun
-	if ($MyCdpJobsNextRun -ne $null) { $MyCdpJobsNextRun = get-date -date $MyCdpJobsNextRun -Uformat %s }
+	if ($null -ne $MyCdpJobsNextRun) { $MyCdpJobsNextRun = get-date -date $MyCdpJobsNextRun -Uformat %s }
 	else { $MyCdpJobsNextRun = "null" }
 
 	$MyCdpJobsPolicyState = $mycdpjobs.PolicyState
@@ -80,7 +80,7 @@ write-host $myCdpJobsText
 $myJobsText = "<<<veeam_jobs:sep(9)>>>`n"
 $myTaskText = ""
 
-$myBackupJobs = Get-VBRJob -WarningAction SilentlyContinue | where {$_.IsScheduleEnabled -eq $true }
+$myBackupJobs = Get-VBRJob -WarningAction SilentlyContinue | Where-Object {$_.IsScheduleEnabled -eq $true }
 
 foreach ($myJob in $myBackupJobs)
     {
@@ -144,7 +144,7 @@ foreach ($myJob in $myBackupJobs)
 		$myTaskText = "$myTaskText" + "TransferedSizeByte" + "`t" + "$myTaskTransferedSize" + "`n"
 
     # Starting from Version 9.5U3 StartTime is not supported anymore
-    If ($myTask.Progress.StartTime -eq $Null) {
+    If ($Null -eq $myTask.Progress.StartTime) {
 		   $myTaskStartTime = $myTask.Progress.StartTimeLocal
     } Else {
 		   $myTaskStartTime = $myTask.Progress.StartTime
@@ -154,7 +154,7 @@ foreach ($myJob in $myBackupJobs)
 		$myTaskText = "$myTaskText" + "StartTime" + "`t" + "$myTaskStartTime" + "`n"
 
     # Starting from Version 9.5U3 StopTime is not supported anymore
-    If ($myTask.Progress.StopTime -eq $Null) {
+    If ($Null -eq $myTask.Progress.StopTime) {
     		$myTaskStopTime = $myTask.Progress.StopTimeLocal
     } Else {
     		$myTaskStopTime = $myTask.Progress.StopTime
