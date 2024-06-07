@@ -38,13 +38,22 @@ catch {
 try {
 	$tapeJobs = Get-VBRTapeJob
 	Write-Host "<<<veeam_tapejobs:sep(124)>>>"
-	Write-Host "JobName|JobID|LastResult|LastState"
+	Write-Host "JobName|JobID|LastResult|LastState|CreationTime|EndTime"
 	foreach ($tapeJob in $tapeJobs) {
 		$jobName = $tapeJob.Name
 		$jobID = $tapeJob.Id
 		$lastResult = $tapeJob.LastResult
 		$lastState = $tapeJob.LastState
-		Write-Host "$jobName|$jobID|$lastResult|$lastState"
+
+		$creationTime = "null"
+		$endTime = "null"
+		$session = @(Get-VBRTapeBackupSession -Job $tapeJob | Sort-Object CreationTime -Descending)[0]
+		if ($null -ne $session) {
+			$creationTime = $session.CreationTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+			$endTime = $session.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+		}
+		
+		Write-Host "$jobName|$jobID|$lastResult|$lastState|$creationTime|$endTime"
 	}
 
 
