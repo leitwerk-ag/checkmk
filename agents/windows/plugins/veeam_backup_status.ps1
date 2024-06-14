@@ -36,14 +36,19 @@ catch {
 
 
 try {
-	$tapeJobs = Get-VBRTapeJob
+	#####################################
+	## Tape Job
+	#####################################
+	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.ScheduleOptions.Enabled }
 	Write-Host "<<<veeam_tapejobs:sep(124)>>>"
-	Write-Host "JobName|JobID|LastResult|LastState|CreationTime|EndTime"
+	Write-Host "JobName|JobID|LastResult|LastState|ScheduleType|CreationTime|EndTime"
 	foreach ($tapeJob in $tapeJobs) {
 		$jobName = $tapeJob.Name
 		$jobID = $tapeJob.Id
 		$lastResult = $tapeJob.LastResult
 		$lastState = $tapeJob.LastState
+
+		$scheduleType = $job.ScheduleOptions.Type
 
 		$creationTime = "null"
 		$endTime = "null"
@@ -53,10 +58,12 @@ try {
 			$endTime = $session.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 		}
 		
-		Write-Host "$jobName|$jobID|$lastResult|$lastState|$creationTime|$endTime"
+		Write-Host "$jobName|$jobID|$lastResult|$lastState|$scheduleType|$creationTime|$endTime"
 	}
 
-
+	#####################################
+	## CDP Job
+	#####################################
 	try {
 		$cdpjobs = Get-VBRCDPPolicy | Select-Object Name, NextRun, PolicyState
 	}
@@ -87,6 +94,9 @@ try {
 		Write-Host $myCdpJobsText
 	}
 
+	#####################################
+	## Backup Job
+	#####################################
 	$myJobsText = "<<<veeam_jobs:sep(9)>>>`n"
 	$myTaskText = ""
 
