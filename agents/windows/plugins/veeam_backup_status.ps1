@@ -41,7 +41,7 @@ try {
 	#####################################
 	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.ScheduleOptions.Enabled }
 	Write-Host "<<<veeam_tapejobs:sep(124)>>>"
-	Write-Host "JobName|JobID|LastResult|LastState|CreationTime|EndTime"
+	Write-Host "JobName|JobID|LastResult|LastState"
 	foreach ($tapeJob in $tapeJobs) {
 		$jobName = $tapeJob.Name
 		$jobID = $tapeJob.Id
