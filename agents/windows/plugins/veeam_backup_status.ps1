@@ -41,24 +41,25 @@ try {
 	#####################################
 	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.ScheduleOptions.Enabled }
 	Write-Host "<<<veeam_tapejobs:sep(124)>>>"
-	Write-Host "JobName|JobID|LastResult|LastState|ScheduleType|CreationTime|EndTime"
+	Write-Host "JobName|JobID|LastResult|LastState|CreationTime|EndTime"
 	foreach ($tapeJob in $tapeJobs) {
 		$jobName = $tapeJob.Name
 		$jobID = $tapeJob.Id
-		$lastResult = $tapeJob.LastResult
-		$lastState = $tapeJob.LastState
 
-		$scheduleType = $job.ScheduleOptions.Type
+		$sessions = @(Get-VBRTapeBackupSession -Job $tapeJob | Sort-Object CreationTime -Descending)
+		$lastFinischedSession = $sessions | Where-Object { $_.Progress -ge 100 } | Select-Object -First 1
 
-		$creationTime = "null"
-		$endTime = "null"
-		$session = @(Get-VBRTapeBackupSession -Job $tapeJob | Sort-Object CreationTime -Descending)[0]
-		if ($null -ne $session) {
-			$creationTime = $session.CreationTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
-			$endTime = $session.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+		$scheduleType = [string]$tapeJob.ScheduleOptions.Type
+		if ($null -ne $lastFinischedSession -and $scheduleType -eq "AfterNewBackup") {
+			$lastResult = $lastFinischedSession.Result
+			$lastState = $lastFinischedSession.State
+		}
+		else {
+			$lastResult = $tapeJob.LastResult
+			$lastState = $tapeJob.LastState
 		}
 		
-		Write-Host "$jobName|$jobID|$lastResult|$lastState|$scheduleType|$creationTime|$endTime"
+		Write-Host "$jobName|$jobID|$lastResult|$lastState"
 	}
 
 	#####################################
