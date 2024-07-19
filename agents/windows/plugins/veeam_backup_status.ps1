@@ -225,10 +225,11 @@ function Get-LastScheduledTapeBackupDate {
 	$mostRecentScheduledBackupDate = $null
 	$today = Get-Date
 	
-
 	# Daily
 	$dailyOptions = $TapeJob.ScheduleOptions.DailyOptions
-	if (($null -ne $dailyOptions) -and ($TapeJob.ScheduleOptions.Type -eq [Veeam.Backup.PowerShell.Infos.VBRBackupToTapePolicyType]::Daily)) {
+	if ($TapeJob.ScheduleOptions.Enabled -and
+		($null -ne $dailyOptions) -and
+		($TapeJob.ScheduleOptions.Type -eq [Veeam.Backup.PowerShell.Infos.VBRBackupToTapePolicyType]::Daily)) {
 		$backupDays = $dailyOptions.DayOfWeek # Array of DayOfWeek Enum
 		$baseDate = Get-Date -Year $today.Year `
 			-Month $today.Month `
@@ -238,16 +239,18 @@ function Get-LastScheduledTapeBackupDate {
 			-Second 0 `
 			-Millisecond 0
 		$baseDate = $baseDate.Add($dailyOptions.Period)
-		$backupDaysDate = foreach ($dayOfWeek in $backupDays) {
+		$backupDaysDates = foreach ($dayOfWeek in $backupDays) {
 			$date = $baseDate.AddDays((-7 - $baseDate.DayOfWeek + $dayOfWeek) % 7)
 			if ($date -lt $today) { $date } else { $date.AddDays(-7) }
 		}
-		$mostRecentScheduledBackupDate = $backupDaysDate | Sort-Object | Select-Object -Last 1
+		$mostRecentScheduledBackupDate = $backupDaysDates | Sort-Object | Select-Object -Last 1
 	}
 
 	# Monthly
 	$monthlyOptions = $TapeJob.ScheduleOptions.MonthlyOptions
-	if (($null -ne $monthlyOptions) -and ($TapeJob.ScheduleOptions.Type -eq [Veeam.Backup.PowerShell.Infos.VBRBackupToTapePolicyType]::Monthly)) {
+	if ($TapeJob.ScheduleOptions.Enabled -and
+		($null -ne $monthlyOptions) -and
+		($TapeJob.ScheduleOptions.Type -eq [Veeam.Backup.PowerShell.Infos.VBRBackupToTapePolicyType]::Monthly)) {
 		$backupMonths = $monthlyOptions.Months
 		$baseDate = Get-Date -Year $today.Year `
 			-Month $today.Month `
@@ -257,10 +260,10 @@ function Get-LastScheduledTapeBackupDate {
 			-Second 0 `
 			-Millisecond 0
 		$baseDate = $baseDate.Add($monthlyOptions.Period)
-		$backupMonthsBaseDate = foreach ($month in $backupMonths) {
+		$backupMonthsBaseDates = foreach ($month in $backupMonths) {
 			$baseDate.AddMonths((-12 - $baseDate.Month + $month) % 12)
 		}
-		$backupMonthsDate = foreach ($monthlyDate in $backupMonthsBaseDate) {
+		$backupMonthsDates = foreach ($monthlyDate in $backupMonthsBaseDates) {
 			switch ($monthlyOptions.DayNumberInMonth) {
 				([Veeam.Backup.PowerShell.Infos.VBRDayNumberInMonth]::First) {
 					$date = Get-FirstWeekDayInMonth $monthlyDate $monthlyOptions.DayOfWeek
@@ -334,19 +337,56 @@ function Get-LastScheduledTapeBackupDate {
 				}
 			}
 		}
-		$mostRecentScheduledBackupDate = $backupMonthsDate | Sort-Object | Select-Object -Last 1
+		$mostRecentScheduledBackupDate = $backupMonthsDates | Sort-Object | Select-Object -Last 1
 	}
 
 	# After Job
 	$afterJobId = $TapeJob.ScheduleOptions.JobId
-	if (($null -ne $afterJobId) -and ($TapeJob.ScheduleOptions.Type -eq [Veeam.Backup.PowerShell.Infos.VBRBackupToTapePolicyType]::AfterJob)) {
-		# TODO calculate last backup start date
+	if ($TapeJob.ScheduleOptions.Enabled -and
+		($null -ne $afterJobId) -and
+		($TapeJob.ScheduleOptions.Type -eq [Veeam.Backup.PowerShell.Infos.VBRBackupToTapePolicyType]::AfterJob)) {
+		$afterJob = Get-VBRJob -WarningAction SilentlyContinue | Where-Object { $_.Id.Guid -eq $afterJobId }
+		$sessions = @(Get-VBRSession -Job $afterJob | Sort-Object CreationTime -Descending)
+		$lastFinischedSession = $sessions | Where-Object { $_.Progress -ge 100 } | Select-Object -First 1
+		if ($null -ne $lastFinischedSession) {
+			$mostRecentScheduledBackupDate = $lastFinischedSession.EndTime
+		}
 	}
 
 	# After New Backup
 	$afterNewBackupSchedule = $TapeJob.ScheduleOptions.ScheduleOptions
-	if (($null -ne $afterNewBackupSchedule) -and ($TapeJob.ScheduleOptions.Type -eq [Veeam.Backup.PowerShell.Infos.VBRBackupToTapePolicyType]::AfterNewBackup)) {
-		# TODO calculate last backup start date
+	if ($TapeJob.ScheduleOptions.Enabled -and
+		($null -ne $afterNewBackupSchedule) -and
+		($TapeJob.ScheduleOptions.Type -eq [Veeam.Backup.PowerShell.Infos.VBRBackupToTapePolicyType]::AfterNewBackup)) {
+		$schedule = @($afterNewBackupSchedule -split ",")
+		# TODO check if scheduler split up is correct
+		$scheduler = [PsCustomObject]@{
+			Sunday    = $schedule[0..23]
+			Monday    = $schedule[24..47]
+			Tuesday   = $schedule[48..71]
+			Wednesday = $schedule[72..95]
+			Thursday  = $schedule[96..119]
+			Friday    = $schedule[120..143]
+			Saturday  = $schedule[144..167]
+		}	
+		
+		# find next pemitted slot on schedule
+		$backupDates = foreach ($job in $TapeJob.Object) {
+			$finischedSessions = @(Get-VBRSession -Job $job | Where-Object { $_.Progress -ge 100 } | Sort-Object -Descending)
+			$foundDate = $false
+			$index = 0
+			while (!$foundDate -and ($index -lt $finischedSessions.Count)) {
+				$newDate = Get-FutureTapeBackupDatePermittedBySchedule $finischedSessions[$index].EndTime $scheduler
+
+				if ($newDate -lt $today) {
+					$foundDate = $true
+					$newDate
+				}
+				$index++
+			}
+		}
+
+		$mostRecentScheduledBackupDate = $backupDates | Sort-Object | Select-Object -Last 1
 	}
 
 	return $mostRecentScheduledBackupDate
@@ -371,11 +411,11 @@ function Get-LastScheduledBackupDate {
 			-Minute $dailyOptions.TimeLocal.Minute `
 			-Second $dailyOptions.TimeLocal.Second `
 			-Millisecond $dailyOptions.TimeLocal.Millisecond
-		$backupDaysDate = foreach ($dayOfWeek in $backupDays) {
+		$backupDaysDates = foreach ($dayOfWeek in $backupDays) {
 			$date = $baseDate.AddDays((-7 - $baseDate.DayOfWeek + $dayOfWeek) % 7)
 			if ($date -lt $today) { $date } else { $date.AddDays(-7) }
 		}
-		$mostRecentScheduledBackupDate = $backupDaysDate | Sort-Object | Select-Object -Last 1
+		$mostRecentScheduledBackupDate = $backupDaysDates | Sort-Object | Select-Object -Last 1
 	}
 
 	# Monthly
@@ -389,10 +429,10 @@ function Get-LastScheduledBackupDate {
 			-Minute $monthlyOptions.TimeLocal.Minute `
 			-Second $monthlyOptions.TimeLocal.Second `
 			-Millisecond $monthlyOptions.TimeLocal.Millisecond
-		$backupMonthsBaseDate = foreach ($month in $backupMonths) {
+		$backupMonthsBaseDates = foreach ($month in $backupMonths) {
 			$baseDate.AddMonths((-12 - $baseDate.Month + $month) % 12)
 		}
-		$backupMonthsDate = foreach ($monthlyDate in $backupMonthsBaseDate) {
+		$backupMonthsDates = foreach ($monthlyDate in $backupMonthsBaseDates) {
 			switch ($monthlyOptions.DayNumberInMonth) {
 				([Veeam.Backup.Common.EDayNumberInMonth]::First) {
 					$date = Get-FirstWeekDayInMonth $monthlyDate $monthlyOptions.DayOfWeek
@@ -463,43 +503,27 @@ function Get-LastScheduledBackupDate {
 				}
 			}
 		}
-		$mostRecentScheduledBackupDate = $backupMonthsDate | Sort-Object | Select-Object -Last 1
+		$mostRecentScheduledBackupDate = $backupMonthsDates | Sort-Object | Select-Object -Last 1
 	}
 
 	# Continuous
-	#TODO check if correct
 	$continuousOptions = $Job.ScheduleOptions.OptionsContinuous
 	if (($null -ne $continuousOptions) -and $continuousOptions.Enabled) {
 		[xml]$xmlSchedule = $continuousOptions.Schedule
 		$scheduler = $xmlSchedule.scheduler
-		$baseDate = Get-Date -Year $today.Year `
-			-Month $today.Month `
-			-Day $today.Day `
-			-Hour 0 `
-			-Minute 59 `
-			-Second 0 `
-			-Millisecond 0
 
+		$finischedSessions = @(Get-VBRSession -Job $Job | Where-Object { $_.Progress -ge 100 } | Sort-Object -Descending)
 		$foundDate = $false
-		$date = $baseDate
-		$timeTable = @($scheduler.($date.DayOfWeek) -split ",")
-		for ($hour = $today.Hour - 1; $hour -ge 0; $hour--) {
-			if (($timeTable[$hour] -eq 0) -and !$foundDate) {				
-				$date = $date.AddHours($hour)
+		$index = 0
+		$mostRecentScheduledBackupDate = while (!$foundDate -and ($index -lt $finischedSessions.Count)) {
+			$newDate = Get-FutureTapeBackupDatePermittedBySchedule $finischedSessions[$index].EndTime $scheduler
+
+			if ($newDate -lt $today) {
 				$foundDate = $true
+				$newDate
 			}
+			$index++
 		}
-		while (!$foundDate -and ($date -ne $baseDate.AddDays(-7))) {
-			$date = $date.AddDays(-1)
-			$timeTable = @($scheduler.($date.DayOfWeek) -split ",")
-			for ($hour = $timeTable.Count - 1; $hour -ge 0; $hour--) {
-				if (($timeTable[$hour] -eq 0) -and !$foundDate) {
-					$date = $date.AddHours($hour)
-					$foundDate = $true
-				}
-			}
-		}
-		if ($foundDate) { $mostRecentScheduledBackupDate = $date }
 	}
 
 	# Periodically
@@ -507,24 +531,130 @@ function Get-LastScheduledBackupDate {
 	if (($null -ne $periodicallyOptions) -and $periodicallyOptions.Enabled) {
 		$xmlSchedule = [xml]$periodicallyOptions.Schedule
 		$scheduler = $xmlSchedule.scheduler
+
 		$baseDate = Get-Date -Year $today.Year `
 			-Month $today.Month `
 			-Day $today.Day `
 			-Hour 0 `
-			-Minute 59 `
+			-Minute 0 `
 			-Second 0 `
 			-Millisecond 0
-		# TODO calculate last backup start date
+		$baseDate = $baseDate.AddMinutes($periodicallyOptions.HourlyOffset)
+		$period = switch ($periodicallyOptions.Unit) {
+			([Veeam.Backup.Model.PeriodicallyOptions+EPeriodicallyUnits]::Seconds) {
+				New-TimeSpan -Seconds $periodicallyOptions.FullPeriod
+			}
+			([Veeam.Backup.Model.PeriodicallyOptions+EPeriodicallyUnits]::Minutes) {
+				New-TimeSpan -Minutes $periodicallyOptions.FullPeriod
+			}
+		}
+
+		$backupDates = $null
+		$date = $baseDate
+		while ($null -eq $backupDates) {
+			$backupDates = @(while ($date -lt $baseDate.AddDays(1)) {
+					$scheduledDate = Get-FutureBackupDatePermittedBySchedule $date $scheduler
+					if ($scheduledDate -lt $today) { $scheduledDate }
+					$date = $date.Add($period)
+				}) | Select-Object -Unique
+
+			$baseDate = $baseDate.AddDays(-1)
+			$date = $baseDate
+		}
+		
+		$mostRecentScheduledBackupDate = $backupDates | Sort-Object | Select-Object -Last 1
 	}
 
 	# After Job
 	$afterJobOptions = $Job.ScheduleOptions.OptionsScheduleAfterJob
-	if (($null -ne $afterJobOptions) -and $afterJobOptions.Enabled) {
+	if (($null -ne $afterJobOptions) -and $afterJobOptions.IsEnabled) {
 		# no options
 		# TODO find target backup job and get end time from last run
 	}
 
 	return $mostRecentScheduledBackupDate
+}
+
+function Get-FutureBackupDatePermittedBySchedule {
+	param (
+		$Date,
+		$Scheduler
+	)
+
+	$today = Get-Date
+
+	$timeTable = @($Scheduler.($Date.DayOfWeek) -split ",")
+	if ($timeTable[$Date.Hour] -eq 0) {
+		$Date
+	}
+	else {
+		$newDate = Get-Date -Year $Date.Year `
+			-Month $Date.Month `
+			-Day $Date.Day `
+			-Hour 0 `
+			-Minute 0 `
+			-Second 0 `
+			-Millisecond 0
+		$foundDate = $false		
+		for ($hour = $Date.Hour + 1; $hour -lt $timeTable.Count; $hour++) {
+			if (($timeTable[$hour] -eq 0) -and !$foundDate) {				
+				$newDate = $newDate.AddHours($hour)
+				$foundDate = $true
+			}
+		}
+		while (!$foundDate -and ($newDate -lt $today.Date)) {
+			$newDate = $newDate.AddDays(1)
+			$timeTable = @($Scheduler.($newDate.DayOfWeek) -split ",")
+			for ($hour = 0; $hour -lt $timeTable.Count; $hour++) {
+				if (($timeTable[$hour] -eq 0) -and !$foundDate) {
+					$newDate = $newDate.AddHours($hour)
+					$foundDate = $true
+				}
+			}
+		}
+		if ($foundDate -and ($newDate -lt $today)) { $newDate }
+	}
+}
+
+function Get-FutureTapeBackupDatePermittedBySchedule {
+	param (
+		$Date,
+		$Scheduler
+	)
+
+	$today = Get-Date
+
+	$timeTable = $Scheduler.($Date.DayOfWeek)
+	if ($timeTable[$Date.Hour] -eq 1) {
+		$Date
+	}
+	else {
+		$newDate = Get-Date -Year $Date.Year `
+			-Month $Date.Month `
+			-Day $Date.Day `
+			-Hour 0 `
+			-Minute 0 `
+			-Second 0 `
+			-Millisecond 0
+		$foundDate = $false		
+		for ($hour = $Date.Hour + 1; $hour -lt $timeTable.Count; $hour++) {
+			if (($timeTable[$hour] -eq 1) -and !$foundDate) {				
+				$newDate = $newDate.AddHours($hour)
+				$foundDate = $true
+			}
+		}
+		while (!$foundDate -and ($newDate -lt $today.Date)) {
+			$newDate = $newDate.AddDays(1)
+			$timeTable = $Scheduler.($newDate.DayOfWeek)
+			for ($hour = 0; $hour -lt $timeTable.Count; $hour++) {
+				if (($timeTable[$hour] -eq 1) -and !$foundDate) {
+					$newDate = $newDate.AddHours($hour)
+					$foundDate = $true
+				}
+			}
+		}
+		if ($foundDate -and ($newDate -lt $today)) { $newDate }
+	}
 }
 
 function Get-FirstWeekDayInMonth {
