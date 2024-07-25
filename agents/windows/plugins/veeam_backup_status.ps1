@@ -359,7 +359,6 @@ function Get-LastScheduledTapeBackupDate {
 		($null -ne $afterNewBackupSchedule) -and
 		($TapeJob.ScheduleOptions.Type -eq [Veeam.Backup.PowerShell.Infos.VBRBackupToTapePolicyType]::AfterNewBackup)) {
 		$schedule = @($afterNewBackupSchedule -split ",")
-		# TODO check if scheduler split up is correct
 		$scheduler = [PsCustomObject]@{
 			Sunday    = $schedule[0..23]
 			Monday    = $schedule[24..47]
@@ -569,7 +568,7 @@ function Get-LastScheduledBackupDate {
 	$afterJobOptions = $Job.ScheduleOptions.OptionsScheduleAfterJob
 	if (($null -ne $afterJobOptions) -and $afterJobOptions.IsEnabled) {
 		# no options
-		# TODO find target backup job and get end time from last run
+		# TODO find target backup job and get end time from last run (ask simon rissler)
 	}
 
 	return $mostRecentScheduledBackupDate
