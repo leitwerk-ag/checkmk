@@ -230,7 +230,7 @@ function Get-LastScheduledTapeBackupDate {
 	if ($TapeJob.ScheduleOptions.Enabled -and
 		($null -ne $dailyOptions) -and
 		($TapeJob.ScheduleOptions.Type -eq [Veeam.Backup.PowerShell.Infos.VBRBackupToTapePolicyType]::Daily)) {
-		$backupDays = $dailyOptions.DayOfWeek # Array of DayOfWeek Enum
+		$backupDays = $dailyOptions.DayOfWeek
 		$baseDate = Get-Date -Year $today.Year `
 			-Month $today.Month `
 			-Day $today.Day `
@@ -358,6 +358,7 @@ function Get-LastScheduledTapeBackupDate {
 	if ($TapeJob.ScheduleOptions.Enabled -and
 		($null -ne $afterNewBackupSchedule) -and
 		($TapeJob.ScheduleOptions.Type -eq [Veeam.Backup.PowerShell.Infos.VBRBackupToTapePolicyType]::AfterNewBackup)) {
+		# get schedule
 		$schedule = @($afterNewBackupSchedule -split ",")
 		# TODO check if scheduler split up is correct
 		$scheduler = [PsCustomObject]@{
@@ -368,7 +369,7 @@ function Get-LastScheduledTapeBackupDate {
 			Thursday  = $schedule[96..119]
 			Friday    = $schedule[120..143]
 			Saturday  = $schedule[144..167]
-		}	
+		}
 		
 		# find next pemitted slot on schedule
 		$backupDates = foreach ($job in $TapeJob.Object) {
@@ -403,7 +404,7 @@ function Get-LastScheduledBackupDate {
 	# Daily
 	$dailyOptions = $Job.ScheduleOptions.OptionsDaily
 	if (($null -ne $dailyOptions) -and $dailyOptions.Enabled) {
-		$backupDays = $dailyOptions.DaysSrv # Array of DayOfWeek Enum
+		$backupDays = $dailyOptions.DaysSrv
 		$baseDate = Get-Date -Year $today.Year `
 			-Month $today.Month `
 			-Day $today.Day `
@@ -509,13 +510,18 @@ function Get-LastScheduledBackupDate {
 	# Continuous
 	$continuousOptions = $Job.ScheduleOptions.OptionsContinuous
 	if (($null -ne $continuousOptions) -and $continuousOptions.Enabled) {
+		# get schedule
 		[xml]$xmlSchedule = $continuousOptions.Schedule
 		$scheduler = $xmlSchedule.scheduler
 
+		# get finisched backup sessions
 		$finischedSessions = @(Get-VBRSession -Job $Job | Where-Object { $_.Progress -ge 100 } | Sort-Object -Descending)
 		$foundDate = $false
 		$index = 0
+
+		# get most recent backup date
 		$mostRecentScheduledBackupDate = while (!$foundDate -and ($index -lt $finischedSessions.Count)) {
+			# get first possible backup date according to schedule
 			$newDate = Get-FutureTapeBackupDatePermittedBySchedule $finischedSessions[$index].EndTime $scheduler
 
 			if ($newDate -lt $today) {
@@ -529,6 +535,7 @@ function Get-LastScheduledBackupDate {
 	# Periodically
 	$periodicallyOptions = $Job.ScheduleOptions.OptionsPeriodically
 	if (($null -ne $periodicallyOptions) -and $periodicallyOptions.Enabled) {
+		# get schedule
 		$xmlSchedule = [xml]$periodicallyOptions.Schedule
 		$scheduler = $xmlSchedule.scheduler
 
