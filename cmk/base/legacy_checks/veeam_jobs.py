@@ -27,11 +27,11 @@ def inventory_veeam_jobs(info):
 
 def check_veeam_jobs(item, _no_params, info):
     for line in info:
-        if len(line) < 6:
+        if len(line) < 7:
             continue  # Skip incomplete lines
 
-        job_name, job_type, job_last_state, job_last_result, job_creation_time, job_end_time = line[
-            :6
+        job_name, job_type, job_last_state, job_last_result, job_creation_time, job_end_time, last_scheduled_job_date = line[
+            :7
         ]
 
         if job_name != item:

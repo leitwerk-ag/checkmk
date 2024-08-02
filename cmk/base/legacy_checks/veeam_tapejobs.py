@@ -25,11 +25,12 @@ def parse_veeam_tapejobs(string_table):
             continue
 
         name = " ".join(line[: -(len(columns) - 1)])
-        job_id, last_result, last_state = line[-(len(columns) - 1) :]
+        job_id, last_result, last_state, last_scheduled_job_date = line[-(len(columns) - 1) :]
         parsed[name] = {
             "job_id": job_id,
             "last_result": last_result,
             "last_state": last_state,
+            "last_scheduled_job_date": last_scheduled_job_date
         }
 
     return parsed
