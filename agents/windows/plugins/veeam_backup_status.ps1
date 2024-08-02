@@ -41,7 +41,7 @@ try {
 	#####################################
 	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.ScheduleOptions.Enabled }
 	Write-Host "<<<veeam_tapejobs:sep(124)>>>"
-	Write-Host "JobName|JobID|LastResult|LastState"
+	Write-Host "JobName|JobID|LastResult|LastState|LastScheduledJobDate"
 	foreach ($tapeJob in $tapeJobs) {
 		$jobName = $tapeJob.Name
 		$jobID = $tapeJob.Id
@@ -58,8 +58,10 @@ try {
 			$lastResult = $tapeJob.LastResult
 			$lastState = $tapeJob.LastState
 		}
+
+		$lastScheduledJobDate = Get-LastScheduledTapeBackupDate $tapeJob
 		
-		Write-Host "$jobName|$jobID|$lastResult|$lastState"
+		Write-Host "$jobName|$jobID|$lastResult|$lastState|$lastScheduledJobDate"
 	}
 
 	#####################################
@@ -118,7 +120,9 @@ try {
 
 		$myJobEndTime = $myJobLastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 
-		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`n"
+		$myJobLastScheduledJobDate = Get-LastScheduledBackupDate $tapeJob
+
+		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`t" + "$myJobLastScheduledJobDate" + "`n"
 
 		# TODO when should the last backup had started
 		
