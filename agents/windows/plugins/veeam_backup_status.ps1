@@ -39,7 +39,7 @@ try {
 	#####################################
 	## Tape Job
 	#####################################
-	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.ScheduleOptions.Enabled }
+	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.ScheduleOptions.Enabled -or $_.FullBackupPolicy.Enabled -or $_.IncrementalBackupPolicy.Enabled }
 	Write-Host "<<<veeam_tapejobs:sep(124)>>>"
 	Write-Host "JobName|JobID|LastResult|LastState"
 	foreach ($tapeJob in $tapeJobs) {
