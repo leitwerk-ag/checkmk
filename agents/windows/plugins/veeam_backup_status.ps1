@@ -607,29 +607,7 @@ function Get-LastWeekDayInMonth {
 	return $Date
 }
 
-#####################################
-## Main
-#####################################
-
-# Load Veeam Backup and Replication Powershell Snapin
-try {
-	Import-Module Veeam.Backup.PowerShell -ErrorAction Stop -DisableNameChecking
-}
-catch {
-	try {
-		Add-PSSnapin VeeamPSSnapIn -ErrorAction Stop
-	}
-	catch {
-		if ($Debug) { Write-Host "No Veeam powershell modules could be loaded" }
-		Exit 1
-	}
-}
-
-
-try {
-	#####################################
-	## Tape Job
-	#####################################
+function Write-TapeJobs {
 	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.ScheduleOptions.Enabled -or $_.FullBackupPolicy.Enabled -or $_.IncrementalBackupPolicy.Enabled }
 	Write-Host "<<<veeam_tapejobs:sep(124)>>>"
 	Write-Host "JobName|JobID|LastResult|LastState|LastScheduledJobDate"
@@ -654,10 +632,9 @@ try {
 		
 		Write-Host "$jobName|$jobID|$lastResult|$lastState|$lastScheduledJobDate"
 	}
+}
 
-	#####################################
-	## CDP Job
-	#####################################
+function Write-CDPJobs {
 	try {
 		$cdpjobs = Get-VBRCDPPolicy | Select-Object Name, NextRun, PolicyState
 	}
@@ -687,10 +664,9 @@ try {
 
 		Write-Host $myCdpJobsText
 	}
+}
 
-	#####################################
-	## Backup Job
-	#####################################
+function Write-BackupJobs {
 	$myJobsText = "<<<veeam_jobs:sep(9)>>>`n"
 	$myTaskText = ""
 
@@ -804,6 +780,30 @@ try {
 
 	Write-Host $myJobsText
 	Write-Host $myTaskText
+}
+
+#####################################
+## Main
+#####################################
+
+# Load Veeam Backup and Replication Powershell Snapin
+try {
+	Import-Module Veeam.Backup.PowerShell -ErrorAction Stop -DisableNameChecking
+}
+catch {
+	try {
+		Add-PSSnapin VeeamPSSnapIn -ErrorAction Stop
+	}
+	catch {
+		if ($Debug) { Write-Host "No Veeam powershell modules could be loaded" }
+		Exit 1
+	}
+}
+
+try {
+	Write-TapeJobs
+	Write-CDPJobs
+	Write-BackupJobs
 }
 catch {
 	$errMsg = $_.Exception.Message
