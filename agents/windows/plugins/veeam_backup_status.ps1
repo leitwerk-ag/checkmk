@@ -272,7 +272,7 @@ function Get-LastScheduledTapeBackupDate {
 		
 		# find next pemitted slot on schedule
 		$backupDates = foreach ($job in $TapeJob.Object) {
-			$finischedSessions = @(Get-VBRSession -Job $job | Where-Object { $_.Progress -ge 100 } | Sort-Object -Descending)
+			$finischedSessions = @(Get-VBRSession -Job $job | Where-Object { $_.Progress -ge 100 } | Sort-Object CreationTime -Descending)
 			$foundDate = $false
 			$index = 0
 			while (!$foundDate -and ($index -lt $finischedSessions.Count)) {
@@ -514,7 +514,7 @@ function Get-LastScheduledBackupDate {
 		$scheduler = $xmlSchedule.scheduler
 
 		# get finisched backup sessions
-		$finischedSessions = @(Get-VBRSession -Job $Job | Where-Object { $_.Progress -ge 100 } | Sort-Object -Descending)
+		$finischedSessions = @(Get-VBRSession -Job $Job | Where-Object { $_.Progress -ge 100 } | Sort-Object CreationTime -Descending)
 		$foundDate = $false
 		$index = 0
 
