@@ -573,9 +573,14 @@ function Get-LastScheduledBackupDate {
 
 	# After Job
 	$afterJobOptions = $Job.ScheduleOptions.OptionsScheduleAfterJob
-	if (($null -ne $afterJobOptions) -and $afterJobOptions.IsEnabled) {
-		# no options
-		# TODO find target backup job and get end time from last run (ask simon rissler)
+	$afterJobId = $Job.PreviousJobIdInScheduleChain.Guid
+	if (($null -ne $afterJobOptions) -and ($null -ne $afterJobId) -and $afterJobOptions.IsEnabled) {		
+		$afterJob = Get-VBRJob -WarningAction SilentlyContinue | Where-Object { $_.Id.Guid -eq $afterJobId }
+		$sessions = @(Get-VBRSession -Job $afterJob | Sort-Object CreationTime -Descending)
+		$lastFinischedSession = $sessions | Where-Object { $_.Progress -ge 100 } | Select-Object -First 1
+		if ($null -ne $lastFinischedSession) {
+			$mostRecentScheduledBackupDate += $lastFinischedSession.EndTime
+		}
 	}
 
 	return $mostRecentScheduledBackupDate | Sort-Object | Select-Object -Last 1
