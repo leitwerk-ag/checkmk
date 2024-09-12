@@ -41,7 +41,7 @@ try {
 	#####################################
 	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.ScheduleOptions.Enabled -or $_.FullBackupPolicy.Enabled -or $_.IncrementalBackupPolicy.Enabled }
 	Write-Host "<<<veeam_tapejobs:sep(124)>>>"
-	Write-Host "JobName|JobID|LastResult|LastState"
+	Write-Host "JobName|JobID|LastResult|LastState|LogErrorMessages"
 	foreach ($tapeJob in $tapeJobs) {
 		$jobName = $tapeJob.Name
 		$jobID = $tapeJob.Id
@@ -58,8 +58,13 @@ try {
 			$lastResult = $tapeJob.LastResult
 			$lastState = $tapeJob.LastState
 		}
+
+		if ($null -ne $lastFinischedSession) {
+			$errorLog = $lastFinischedSession.Log | Where-Object { $_.Status -ne [Veeam.Backup.PowerShell.Infos.VBRLogStatus]::Succeeded }
+			$logErrorMessages = $errorLog.Title -join ";"
+		}
 		
-		Write-Host "$jobName|$jobID|$lastResult|$lastState"
+		Write-Host "$jobName|$jobID|$lastResult|$lastState|$logErrorMessages"
 	}
 
 	#####################################
@@ -118,7 +123,10 @@ try {
 
 		$myJobEndTime = $myJobLastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 
-		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`n"
+		$myJobErrorLog = $myJobLastSession.Logger.GetLog().UpdatedRecords | Where-Object { $_.Status -ne [Veeam.Backup.Common.ETaskLogRecordStatus]::ESucceeded }
+		$myJobLogErrorMessages = $myJobErrorLog.Title -join ";"
+
+		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`t" + "$myJobLogErrorMessages" + "`n"
 
 		# For Non Backup Jobs (Replicas) we bail out
 		# because we are interested in the status of the original backup but

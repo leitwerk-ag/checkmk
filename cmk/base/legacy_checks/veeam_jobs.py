@@ -30,8 +30,8 @@ def check_veeam_jobs(item, _no_params, info):
         if len(line) < 6:
             continue  # Skip incomplete lines
 
-        job_name, job_type, job_last_state, job_last_result, job_creation_time, job_end_time = line[
-            :6
+        job_name, job_type, job_last_state, job_last_result, job_creation_time, job_end_time, log_error_messages = line[
+            :7
         ]
 
         if job_name != item:
@@ -55,13 +55,15 @@ def check_veeam_jobs(item, _no_params, info):
         else:
             state = 3
 
-        return state, "State: {}, Result: {}, Creation time: {}, End time: {}, Type: {}".format(
+        yield state, "State: {}, Result: {}, Creation time: {}, End time: {}, Type: {}".format(
             job_last_state,
             job_last_result,
             job_creation_time,
             job_end_time,
             job_type,
         )
+        yield 0, "Log Error Messages: {}".format(log_error_messages)
+        return
 
 
 def parse_veeam_jobs(string_table: StringTable) -> StringTable:

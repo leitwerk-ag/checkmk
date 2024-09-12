@@ -25,11 +25,12 @@ def parse_veeam_tapejobs(string_table):
             continue
 
         name = " ".join(line[: -(len(columns) - 1)])
-        job_id, last_result, last_state = line[-(len(columns) - 1) :]
+        job_id, last_result, last_state, log_error_messages = line[-(len(columns) - 1):]
         parsed[name] = {
             "job_id": job_id,
             "last_result": last_result,
             "last_state": last_state,
+            "log_error_messages": log_error_messages,
         }
 
     return parsed
@@ -48,10 +49,12 @@ def check_veeam_tapejobs(item, params, parsed):
     job_id = data["job_id"]
     last_result = data["last_result"]
     last_state = data["last_state"]
+    log_error_messages = data["log_error_messages"]
 
     if last_result != "None" or last_state not in ("Working", "Idle"):
         yield BACKUP_STATE.get(last_result, 2), "Last backup result: %s" % last_result
         yield 0, "Last state: %s" % last_state
+        yield 0, "Log Error Messages: %s" % log_error_messages
         value_store[f"{job_id}.running_since"] = None
         return
 
