@@ -14,18 +14,21 @@
 # BACKUP_R43-Pool5_HXWH44 Backup  Stopped Success 27.10.2013 23:00:00     27.10.2013 23:04:53
 # BACKUP_R43-Pool2_HXWH44 Backup  Stopped Failed  27.10.2013 02:37:45     27.10.2013 02:45:35
 
+from datetime import datetime
 
-from cmk.base.check_api import LegacyCheckDefinition
+from cmk.base.check_api import check_levels, LegacyCheckDefinition
 from cmk.base.config import check_info
 
-from cmk.agent_based.v2 import StringTable
+from cmk.agent_based.v2 import StringTable, render
+
+_DAY = 3600 * 24
 
 
 def inventory_veeam_jobs(info):
     return [(x[0], None) for x in info]
 
 
-def check_veeam_jobs(item, _no_params, info):
+def check_veeam_jobs(item, params, info):
     for line in info:
         if len(line) < 7:
             continue  # Skip incomplete lines
@@ -33,6 +36,10 @@ def check_veeam_jobs(item, _no_params, info):
         job_name, job_type, job_last_state, job_last_result, job_creation_time, job_end_time, last_scheduled_job_date = line[
             :7
         ]
+
+        job_creation_time = datetime.strptime(job_creation_time, "%d.%m.%Y %H:%M:%S")
+        job_end_time = datetime.strptime(job_end_time, "%d.%m.%Y %H:%M:%S")
+        last_scheduled_job_date = datetime.strptime(last_scheduled_job_date, "%d.%m.%Y %H:%M:%S")
 
         if job_name != item:
             continue  # Skip not matching lines
@@ -55,12 +62,21 @@ def check_veeam_jobs(item, _no_params, info):
         else:
             state = 3
 
-        return state, "State: {}, Result: {}, Creation time: {}, End time: {}, Type: {}".format(
+        yield state, "State: {}, Result: {}, Creation time: {}, End time: {}, Type: {}".format(
             job_last_state,
             job_last_result,
             job_creation_time,
             job_end_time,
             job_type,
+        )
+
+        time_diff = (last_scheduled_job_date - job_creation_time).total_seconds()
+        yield check_levels(
+            time_diff,
+            None,
+            params["levels_upper_time_since_last_job"],
+            human_readable_func=render.timespan,
+            infoname="Time since last run should have been executed",
         )
 
 
@@ -73,4 +89,7 @@ check_info["veeam_jobs"] = LegacyCheckDefinition(
     service_name="VEEAM Job %s",
     discovery_function=inventory_veeam_jobs,
     check_function=check_veeam_jobs,
+    check_default_parameters={
+        "levels_upper_time_since_last_job": (1 * _DAY, 2 * _DAY),
+    },
 )
