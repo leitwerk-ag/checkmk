@@ -53,41 +53,47 @@ def check_veeam_tapejobs(item, params, parsed):
     creation_time = data["creation_time"]
     end_time = data["end_time"]
 
-    if last_result != "None" or last_state not in ("Working", "Idle"):
-        state = BACKUP_STATE.get(last_result, 2)
-        value_store[f"{job_id}.running_since"] = None
-        if state == 0:
-            value_store[f"{job_id}.last_ok_creation_time"] = creation_time
-            value_store[f"{job_id}.last_ok_end_time"] = end_time
-        yield state, "State: {}, Result: {}, Creation time: {}, End time: {}".format(
-            last_state,
-            last_result,
-            creation_time,
-            end_time,
+    # handle currently running jobs
+    if last_result == "None" and last_state in ("Working", "Idle"):
+        running_since = value_store.get(f"{job_id}.running_since")
+        now = time.time()
+        if not running_since:
+            running_since = now
+            value_store[f"{job_id}.running_since"] = now
+        running_time = now - running_since
+
+        yield 0, "Backup in progress since {} (currently {})".format(
+            render.datetime(running_since),
+            last_state.lower(),
         )
-        yield 0, "Last Sucesfull Job: Creation time: {}, End time: {}".format(
-            value_store.get(f"{job_id}.last_ok_creation_time"),
-            value_store.get(f"{job_id}.last_ok_end_time"),
+        yield check_levels(
+            running_time,
+            None,
+            params["levels_upper"],
+            human_readable_func=render.timespan,
+            infoname="Running time",
         )
         return
 
-    running_since = value_store.get(f"{job_id}.running_since")
-    now = time.time()
-    if not running_since:
-        running_since = now
-        value_store[f"{job_id}.running_since"] = now
-    running_time = now - running_since
+    # calculate check state
+    state = BACKUP_STATE.get(last_result, 2)
 
-    yield 0, "Backup in progress since {} (currently {})".format(
-        render.datetime(running_since),
-        last_state.lower(),
+    # update value store
+    value_store[f"{job_id}.running_since"] = None
+    if state == 0:
+        value_store[f"{job_id}.last_ok_creation_time"] = creation_time
+        value_store[f"{job_id}.last_ok_end_time"] = end_time
+
+    # generate output
+    yield state, "State: {}, Result: {}, Creation time: {}, End time: {}".format(
+        last_state,
+        last_result,
+        creation_time,
+        end_time,
     )
-    yield check_levels(
-        running_time,
-        None,
-        params["levels_upper"],
-        human_readable_func=render.timespan,
-        infoname="Running time",
+    yield 0, "Last Sucesfull Job: Creation time: {}, End time: {}".format(
+        value_store.get(f"{job_id}.last_ok_creation_time"),
+        value_store.get(f"{job_id}.last_ok_end_time"),
     )
 
 

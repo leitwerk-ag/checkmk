@@ -60,11 +60,12 @@ def check_veeam_jobs(item, _no_params, info):
         else:
             state = 3
 
-        # update value store if check successful
+        # update value store
         if state == 0:
             value_store[f"{job_id}.last_ok_creation_time"] = job_creation_time
             value_store[f"{job_id}.last_ok_end_time"] = job_end_time
 
+        # generate output
         yield state, "State: {}, Result: {}, Creation time: {}, End time: {}, Type: {}".format(
             job_last_state,
             job_last_result,
