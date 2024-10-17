@@ -116,6 +116,8 @@ try {
 
 		$myJobType = $myjob.JobType
 
+		$myJobId = $myJob.Id
+
 		$myJobLastState = $myJob.GetLastState()
 
 		$myJobLastResult = $myJob.GetLastResult()
@@ -126,7 +128,7 @@ try {
 
 		$myJobEndTime = $myJobLastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 
-		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`n"
+		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobId" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`n"
 
 		# For Non Backup Jobs (Replicas) we bail out
 		# because we are interested in the status of the original backup but

@@ -54,11 +54,21 @@ def check_veeam_tapejobs(item, params, parsed):
     end_time = data["end_time"]
 
     if last_result != "None" or last_state not in ("Working", "Idle"):
-        yield BACKUP_STATE.get(last_result, 2), "Last backup result: %s" % last_result
-        yield 0, "Last state: %s" % last_state
-        yield 0, "Creation time: %s" % creation_time
-        yield 0, "End time: %s" % end_time
+        state = BACKUP_STATE.get(last_result, 2)
         value_store[f"{job_id}.running_since"] = None
+        if state == 0:
+            value_store[f"{job_id}.last_ok_creation_time"] = creation_time
+            value_store[f"{job_id}.last_ok_end_time"] = end_time
+        yield state, "State: {}, Result: {}, Creation time: {}, End time: {}".format(
+            last_state,
+            last_result,
+            creation_time,
+            end_time,
+        )
+        yield 0, "Last Sucesfull Job: Creation time: {}, End time: {}".format(
+            value_store.get(f"{job_id}.last_ok_creation_time"),
+            value_store.get(f"{job_id}.last_ok_end_time"),
+        )
         return
 
     running_since = value_store.get(f"{job_id}.running_since")

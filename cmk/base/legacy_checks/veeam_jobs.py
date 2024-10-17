@@ -18,7 +18,7 @@
 from cmk.base.check_api import LegacyCheckDefinition
 from cmk.base.config import check_info
 
-from cmk.agent_based.v2 import StringTable
+from cmk.agent_based.v2 import StringTable, get_value_store
 
 
 def inventory_veeam_jobs(info):
@@ -30,7 +30,8 @@ def check_veeam_jobs(item, _no_params, info):
         if len(line) < 6:
             continue  # Skip incomplete lines
 
-        job_name, job_type, job_last_state, job_last_result, job_creation_time, job_end_time = line[
+        value_store = get_value_store()
+        job_name, job_id, job_type, job_last_state, job_last_result, job_creation_time, job_end_time = line[
             :6
         ]
 
@@ -55,13 +56,22 @@ def check_veeam_jobs(item, _no_params, info):
         else:
             state = 3
 
-        return state, "State: {}, Result: {}, Creation time: {}, End time: {}, Type: {}".format(
+        if state == 0:
+            value_store[f"{job_id}.last_ok_creation_time"] = job_creation_time
+            value_store[f"{job_id}.last_ok_end_time"] = job_end_time
+
+        yield state, "State: {}, Result: {}, Creation time: {}, End time: {}, Type: {}".format(
             job_last_state,
             job_last_result,
             job_creation_time,
             job_end_time,
             job_type,
         )
+        yield 0, "Last Sucesfull Job: Creation time: {}, End time: {}".format(
+            value_store.get(f"{job_id}.last_ok_creation_time"),
+            value_store.get(f"{job_id}.last_ok_end_time"),
+        )
+        return
 
 
 def parse_veeam_jobs(string_table: StringTable) -> StringTable:
