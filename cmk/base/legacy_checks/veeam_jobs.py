@@ -27,23 +27,27 @@ def inventory_veeam_jobs(info):
 
 def check_veeam_jobs(item, _no_params, info):
     for line in info:
-        if len(line) < 6:
-            continue  # Skip incomplete lines
+        # skip incomplete lines
+        if len(line) < 7:
+            continue
 
         value_store = get_value_store()
         job_name, job_id, job_type, job_last_state, job_last_result, job_creation_time, job_end_time = line[
-            :6
+            :7
         ]
 
+        # skip not matching lines
         if job_name != item:
-            continue  # Skip not matching lines
+            continue
 
+        # handle currently running jobs
         if job_last_state in ["Starting", "Working", "Postprocessing"]:
             return 0, "Running since {} (current state is: {})".format(
                 job_creation_time,
                 job_last_state,
             )
 
+        # calculate check state
         if job_last_result == "Success":
             state = 0
         elif job_last_state == "Idle" and job_type == "BackupSync":
@@ -56,6 +60,7 @@ def check_veeam_jobs(item, _no_params, info):
         else:
             state = 3
 
+        # update value store if check successful
         if state == 0:
             value_store[f"{job_id}.last_ok_creation_time"] = job_creation_time
             value_store[f"{job_id}.last_ok_end_time"] = job_end_time
@@ -71,7 +76,6 @@ def check_veeam_jobs(item, _no_params, info):
             value_store.get(f"{job_id}.last_ok_creation_time"),
             value_store.get(f"{job_id}.last_ok_end_time"),
         )
-        return
 
 
 def parse_veeam_jobs(string_table: StringTable) -> StringTable:
