@@ -521,7 +521,7 @@ function Get-LastScheduledBackupDate {
 		# get most recent backup date
 		$mostRecentScheduledBackupDate += while (!$foundDate -and ($index -lt $finischedSessions.Count)) {
 			# get first possible backup date according to schedule
-			$newDate = Get-FutureTapeBackupDatePermittedBySchedule $finischedSessions[$index].EndTime $scheduler
+			$newDate = Get-FutureBackupDatePermittedBySchedule $finischedSessions[$index].EndTime $scheduler
 
 			if ($newDate -lt $today) {
 				$foundDate = $true
