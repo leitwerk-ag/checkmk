@@ -41,10 +41,11 @@ try {
 	#####################################
 	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.ScheduleOptions.Enabled -or $_.FullBackupPolicy.Enabled -or $_.IncrementalBackupPolicy.Enabled }
 	Write-Host "<<<veeam_tapejobs:sep(124)>>>"
-	Write-Host "JobName|JobID|LastResult|LastState|CreationTime|EndTime"
+	Write-Host "JobName|JobID|JobType|LastResult|LastState|CreationTime|EndTime"
 	foreach ($tapeJob in $tapeJobs) {
 		$jobName = $tapeJob.Name
 		$jobID = $tapeJob.Id
+		$jobType = $tapeJob.Type
 		$creationTime = "null"
 		$endTime = "null"
 
@@ -67,7 +68,7 @@ try {
 			$endTime = $lastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 		}
 		
-		Write-Host "$jobName|$jobID|$lastResult|$lastState|$creationTime|$endTime"
+		Write-Host "$jobName|$jobID|$jobType|$lastResult|$lastState|$creationTime|$endTime"
 	}
 
 	#####################################
