@@ -127,18 +127,31 @@ try {
 		$myJobLastState = $myJob.GetLastState()
 
 		$myJobLastResult = $myJob.GetLastResult()
+        
+        $myJobLastSession = $myJob.FindLastSession()
+		if (($null -eq $myJobLastSession) -or ($null -eq $myJobLastSession.Logger.GetLog().UpdatedRecords)) {
+			$myJobLastSession = Get-VBRBackupSession -Name "$myJobName*" | Sort-Object CreationTime -Descending | Select-Object -First 1
+		}
 
-		$myJobLastSession = $myJob.FindLastSession()
+        $myJobLogErrorMessages = "null"
+        $myJobCreationTime = "null"
+		$myJobEndTime = "null"
+        if ($null -ne $myJobLastSession) {
+            $myJobErrorLog = $myJobLastSession.Logger.GetLog().UpdatedRecords    
+		    if ($null -ne $myJobErrorLog) {
+			    $myJobLogErrorMessages = ($myJobErrorLog | Where-Object { $_.Status -ne [Veeam.Backup.Common.ETaskLogRecordStatus]::ESucceeded }).Title -join ";"
+		    }
+            else {
+                $myJobLogErrorMessages = ""
+            }
 
-		$myJobCreationTime = $myJobLastSession.CreationTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+            $myJobCreationTime = $myJobLastSession.CreationTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 
-		$myJobEndTime = $myJobLastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
-		
-		$myJobErrorLog = $myJobLastSession.Logger.GetLog().UpdatedRecords | Where-Object { $_.Status -ne [Veeam.Backup.Common.ETaskLogRecordStatus]::ESucceeded }
-		$myJobLogErrorMessages = $myJobErrorLog.Title -join ";"
+		    $myJobEndTime = $myJobLastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+        }
 
-		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobId" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`t" + "$myJobLogErrorMessages"+ "`n"
-
+		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobId" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`t" + "$myJobLogErrorMessages" + "`n"
+        
 		# For Non Backup Jobs (Replicas) we bail out
 		# because we are interested in the status of the original backup but
 		# for replicas the overall job state is all we need.
