@@ -41,7 +41,7 @@ try {
 	#####################################
 	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.ScheduleOptions.Enabled -or $_.FullBackupPolicy.Enabled -or $_.IncrementalBackupPolicy.Enabled }
 	Write-Host "<<<veeam_tapejobs:sep(124)>>>"
-	Write-Host "JobName|JobID|JobType|LastResult|LastState|CreationTime|EndTime"
+	Write-Host "JobName|JobID|JobType|LastResult|LastState|CreationTime|EndTime|LogErrorMessages"
 	foreach ($tapeJob in $tapeJobs) {
 		$jobName = $tapeJob.Name
 		$jobID = $tapeJob.Id
@@ -61,6 +61,11 @@ try {
 			$lastResult = $tapeJob.LastResult
 			$lastState = $tapeJob.LastState
 		}
+
+		if ($null -ne $lastFinischedSession) {
+			$errorLog = $lastFinischedSession.Log | Where-Object { $_.Status -ne [Veeam.Backup.PowerShell.Infos.VBRLogStatus]::Succeeded }
+			$logErrorMessages = $errorLog.Title -join ";"
+		}
 		
 		$lastSession = $sessions[0]
 		if ($null -ne $lastSession) {
@@ -68,7 +73,7 @@ try {
 			$endTime = $lastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 		}
 		
-		Write-Host "$jobName|$jobID|$jobType|$lastResult|$lastState|$creationTime|$endTime"
+		Write-Host "$jobName|$jobID|$jobType|$lastResult|$lastState|$creationTime|$endTime|$logErrorMessages"
 	}
 
 	#####################################
@@ -128,8 +133,11 @@ try {
 		$myJobCreationTime = $myJobLastSession.CreationTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 
 		$myJobEndTime = $myJobLastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+		
+		$myJobErrorLog = $myJobLastSession.Logger.GetLog().UpdatedRecords | Where-Object { $_.Status -ne [Veeam.Backup.Common.ETaskLogRecordStatus]::ESucceeded }
+		$myJobLogErrorMessages = $myJobErrorLog.Title -join ";"
 
-		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobId" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`n"
+		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobId" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`t" + "$myJobLogErrorMessages"+ "`n"
 
 		# For Non Backup Jobs (Replicas) we bail out
 		# because we are interested in the status of the original backup but

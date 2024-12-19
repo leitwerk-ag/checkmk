@@ -32,8 +32,8 @@ def check_veeam_jobs(item, _no_params, info):
             continue
 
         value_store = get_value_store()
-        job_name, job_id, job_type, job_last_state, job_last_result, job_creation_time, job_end_time = line[
-            :7
+        job_name, job_id, job_type, job_last_state, job_last_result, job_creation_time, job_end_time, log_error_messages = line[
+            :8
         ]
 
         # skip not matching lines
@@ -77,6 +77,7 @@ def check_veeam_jobs(item, _no_params, info):
             value_store.get(f"{job_id}.last_ok_creation_time"),
             value_store.get(f"{job_id}.last_ok_end_time"),
         )
+        yield 0, "Log Error Messages: {}".format(log_error_messages)
 
 
 def parse_veeam_jobs(string_table: StringTable) -> StringTable:

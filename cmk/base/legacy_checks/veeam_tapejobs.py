@@ -25,13 +25,14 @@ def parse_veeam_tapejobs(string_table):
             continue
 
         name = " ".join(line[: -(len(columns) - 1)])
-        job_id, last_result, last_state, creation_time, end_time = line[-(len(columns) - 1):]
+        job_id, last_result, last_state, creation_time, end_time, log_error_messages = line[-(len(columns) - 1):]
         parsed[name] = {
             "job_id": job_id,
             "last_result": last_result,
             "last_state": last_state,
             "creation_time": creation_time,
             "end_time": end_time,
+            "log_error_messages": log_error_messages,
         }
 
     return parsed
@@ -52,6 +53,7 @@ def check_veeam_tapejobs(item, params, parsed):
     last_state = data["last_state"]
     creation_time = data["creation_time"]
     end_time = data["end_time"]
+    log_error_messages = data["log_error_messages"]
 
     # handle currently running jobs
     if last_result == "None" and last_state in ("Working", "Idle"):
@@ -95,6 +97,7 @@ def check_veeam_tapejobs(item, params, parsed):
         value_store.get(f"{job_id}.last_ok_creation_time"),
         value_store.get(f"{job_id}.last_ok_end_time"),
     )
+    yield 0, "Log Error Messages: %s" % log_error_messages
 
 
 check_info["veeam_tapejobs"] = LegacyCheckDefinition(
