@@ -620,9 +620,6 @@ function Write-TapeJobs {
 		$jobName = $tapeJob.Name
 		$jobID = $tapeJob.Id
 		$jobType = $tapeJob.Type
-		$creationTime = ""
-		$endTime = ""
-		$logErrorMessages = ""
 
 		$sessions = @(Get-VBRTapeBackupSession -Job $tapeJob | Sort-Object CreationTime -Descending)
 		$lastFinischedSession = $sessions | Where-Object { $_.Progress -ge 100 } | Select-Object -First 1
@@ -697,9 +694,6 @@ function Write-BackupJobs {
 		$jobLastState = $job.GetLastState()
 		$jobLastResult = $job.GetLastResult()        
 		$jobLastSession = $job.FindLastSession()
-		$jobLogErrorMessages = ""
-		$jobCreationTime = ""
-		$jobEndTime = ""
 
 		if ($null -ne $jobLastSession) {
 			$jobErrorLog = $jobLastSession.Logger.GetLog().UpdatedRecords
