@@ -616,7 +616,6 @@ function Write-TapeJobs {
 	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.Enabled -and ($_.ScheduleOptions.Enabled -or $_.FullBackupPolicy.Enabled -or $_.IncrementalBackupPolicy.Enabled) }
 	Write-Host "<<<veeam_tapejobs:sep(124):encoding(cp437)>>>"
 
-	
 	foreach ($tapeJob in $tapeJobs) {
 		$jobName = $tapeJob.Name
 		$jobID = $tapeJob.Id
@@ -688,127 +687,112 @@ function Write-CDPJobs {
 }
 
 function Write-BackupJobs {
-	$myJobsText = "<<<veeam_jobs:sep(9):encoding(cp437)>>>`n"
-	$myTaskText = ""
+	$backupJobs = Get-VBRJob -WarningAction SilentlyContinue | Where-Object { $_.IsScheduleEnabled -and !$_.Options.JobOptions.RunManually }
+	$jobsText = "<<<veeam_jobs:sep(9):encoding(cp437)>>>`n"
+	$taskText = ""
+	foreach ($job in $backupJobs) {
+		$jobName = $job.Name -replace "\'", "_" -replace " ", "_"
+		$jobType = $job.JobType
+		$jobId = $job.Id
+		$jobLastState = $job.GetLastState()
+		$jobLastResult = $job.GetLastResult()        
+		$jobLastSession = $job.FindLastSession()
+		$jobLogErrorMessages = ""
+		$jobCreationTime = ""
+		$jobEndTime = ""
 
-	$myBackupJobs = Get-VBRJob -WarningAction SilentlyContinue | Where-Object { $_.IsScheduleEnabled -and !$_.Options.JobOptions.RunManually }
-
-	foreach ($myJob in $myBackupJobs) {
-		$myJobName = $myJob.Name -replace "\'", "_" -replace " ", "_"
-		$myJobType = $myjob.JobType
-		$myJobId = $myJob.Id
-		$myJobLastState = $myJob.GetLastState()
-		$myJobLastResult = $myJob.GetLastResult()        
-		$myJobLastSession = $myJob.FindLastSession()
-		$myJobLogErrorMessages = ""
-		$myJobCreationTime = ""
-		$myJobEndTime = ""
-
-		if ($null -ne $myJobLastSession) {
-			$myJobErrorLog = $myJobLastSession.Logger.GetLog().UpdatedRecords
-			if ($null -ne $myJobErrorLog) {
-				$myJobLogErrorMessages = ($myJobErrorLog | Where-Object { $_.Status -ne [Veeam.Backup.Common.ETaskLogRecordStatus]::ESucceeded }).Title -replace "`n", "; " -replace "`r", "" -join "^"
+		if ($null -ne $jobLastSession) {
+			$jobErrorLog = $jobLastSession.Logger.GetLog().UpdatedRecords
+			if ($null -ne $jobErrorLog) {
+				$jobLogErrorMessages = ($jobErrorLog | Where-Object { $_.Status -ne [Veeam.Backup.Common.ETaskLogRecordStatus]::ESucceeded }).Title -replace "`n", "; " -replace "`r", "" -join "^"
 			}
 
-			if ($null -ne $myJobLastSession.CreationTime) {
-				$myJobCreationTime = $myJobLastSession.CreationTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+			if ($null -ne $jobLastSession.CreationTime) {
+				$jobCreationTime = $jobLastSession.CreationTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 			}
 
-			if ($null -ne $myJobLastSession.EndTime) {
-				$myJobEndTime = $myJobLastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+			if ($null -ne $jobLastSession.EndTime) {
+				$jobEndTime = $jobLastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 			}
 		}
 
-		$myJobLastScheduledJobDate = Get-LastScheduledBackupDate $myJob | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+		$jobLastScheduledJobDate = Get-LastScheduledBackupDate $job | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 
-		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobId" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`t" + "$myJobLastScheduledJobDate" + "`t" + "$myJobLogErrorMessages" + "`n"
+		$jobsText = "$jobsText$jobName`t$jobId`t$jobType`t$jobLastState`t$jobLastResult`t$jobCreationTime`t$jobEndTime`t$jobLastScheduledJobDate`t$jobLogErrorMessages`n"
         
 		# For Non Backup Jobs (Replicas) we bail out
 		# because we are interested in the status of the original backup but
 		# for replicas the overall job state is all we need.
-		if ($myJob.IsBackup -eq $false) { continue }
+		if ($job.IsBackup -eq $false) { continue }
 
 		# Each backup job has a number of tasks which were executed (VMs which were processed)
 		# Get all Tasks of the  L A S T  backup session
 		# Caution: Each backup job MAY have run SEVERAL times for retries,
 		# thats why we need all sessions related to the last one if its a retry
-		$sessions = @($myJobLastSession)
-		if ($myJobLastSession.IsRetryMode) {
-			$sessions = $myJobLastSession.GetOriginalAndRetrySessions($TRUE)
+		$sessions = @($jobLastSession)
+		if ($jobLastSession.IsRetryMode) {
+			$sessions = $jobLastSession.GetOriginalAndRetrySessions($TRUE)
 		}
 
-		$myJobLastSessionTasks = $sessions | Get-VBRTaskSession -ErrorAction SilentlyContinue
+		$jobLastSessionTasks = $sessions | Get-VBRTaskSession -ErrorAction SilentlyContinue
 
-		foreach ($myTask in $myJobLastSessionTasks) {
-			$myTaskName = $myTask.Name -replace "[^ -x7e]" -replace " ", "_"
+		foreach ($task in $jobLastSessionTasks) {
+			$taskName = $task.Name -replace "[^ -x7e]" -replace " ", "_"
+			$taskText = "$taskText" + "<<<<" + "$taskName" + ">>>>" + "`n"
+			$taskText = "$taskText" + "<<<" + "veeam_client:sep(9):encoding(cp437)" + ">>>" + "`n"
 
-			$myTaskText = "$myTaskText" + "<<<<" + "$myTaskName" + ">>>>" + "`n"
+			$taskStatus = $task.Status
+			$taskText = "$taskText" + "Status" + "`t" + "$taskStatus" + "`n"
+			
+			$taskText = "$taskText" + "JobName" + "`t" + "$jobName" + "`n"
 
-			$myTaskText = "$myTaskText" + "<<<" + "veeam_client:sep(9):encoding(cp437)" + ">>>" + "`n"
+			$taskTotalSize = $task.Progress.TotalSize
+			$taskText = "$taskText" + "TotalSizeByte" + "`t" + "$taskTotalSize" + "`n"
 
-			$myTaskStatus = $myTask.Status
+			$taskReadSize = $task.Progress.ReadSize
+			$taskText = "$taskText" + "ReadSizeByte" + "`t" + "$taskReadSize" + "`n"
 
-			$myTaskText = "$myTaskText" + "Status" + "`t" + "$myTaskStatus" + "`n"
-
-			$myTaskText = "$myTaskText" + "JobName" + "`t" + "$myJobName" + "`n"
-
-			$myTaskTotalSize = $myTask.Progress.TotalSize
-
-			$myTaskText = "$myTaskText" + "TotalSizeByte" + "`t" + "$myTaskTotalSize" + "`n"
-
-			$myTaskReadSize = $myTask.Progress.ReadSize
-
-			$myTaskText = "$myTaskText" + "ReadSizeByte" + "`t" + "$myTaskReadSize" + "`n"
-
-			$myTaskTransferedSize = $myTask.Progress.TransferedSize
-
-			$myTaskText = "$myTaskText" + "TransferedSizeByte" + "`t" + "$myTaskTransferedSize" + "`n"
+			$taskTransferedSize = $task.Progress.TransferedSize
+			$taskText = "$taskText" + "TransferedSizeByte" + "`t" + "$taskTransferedSize" + "`n"
 
 			# Starting from Version 9.5U3 StartTime is not supported anymore
-			if ($Null -eq $myTask.Progress.StartTime) {
-				$myTaskStartTime = $myTask.Progress.StartTimeLocal
+			if ($Null -eq $task.Progress.StartTime) {
+				$taskStartTime = $task.Progress.StartTimeLocal
 			}
 			else {
-				$myTaskStartTime = $myTask.Progress.StartTime
+				$taskStartTime = $task.Progress.StartTime
 			}
-			$myTaskStartTime = $myTaskStartTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
-
-			$myTaskText = "$myTaskText" + "StartTime" + "`t" + "$myTaskStartTime" + "`n"
+			$taskStartTime = $taskStartTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+			$taskText = "$taskText" + "StartTime" + "`t" + "$taskStartTime" + "`n"
 
 			# Starting from Version 9.5U3 StopTime is not supported anymore
-			if ($Null -eq $myTask.Progress.StopTime) {
-				$myTaskStopTime = $myTask.Progress.StopTimeLocal
+			if ($Null -eq $task.Progress.StopTime) {
+				$taskStopTime = $task.Progress.StopTimeLocal
 			}
 			else {
-				$myTaskStopTime = $myTask.Progress.StopTime
+				$taskStopTime = $task.Progress.StopTime
 			}
-			$myTaskStopTime = $myTaskStopTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
-
-			$myTaskText = "$myTaskText" + "StopTime" + "`t" + "$myTaskStopTime" + "`n"
+			$taskStopTime = $taskStopTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+			$taskText = "$taskText" + "StopTime" + "`t" + "$taskStopTime" + "`n"
 
 			# Result is a value of type System.TimeStamp. I'm sure there is a more elegant way of formatting the output:
-			$myTaskDuration = "" + "{0:D2}" -f $myTask.Progress.duration.Days + ":" + "{0:D2}" -f $myTask.Progress.duration.Hours + ":" + "{0:D2}" -f $myTask.Progress.duration.Minutes + ":" + "{0:D2}" -f $myTask.Progress.duration.Seconds
+			$taskDuration = "" + "{0:D2}" -f $task.Progress.duration.Days + ":" + "{0:D2}" -f $task.Progress.duration.Hours + ":" + "{0:D2}" -f $task.Progress.duration.Minutes + ":" + "{0:D2}" -f $task.Progress.duration.Seconds
+			$taskText = "$taskText" + "DurationDDHHMMSS" + "`t" + "$taskDuration" + "`n"
 
-			$myTaskText = "$myTaskText" + "DurationDDHHMMSS" + "`t" + "$myTaskDuration" + "`n"
+			$taskAvgSpeed = $task.Progress.AvgSpeed
+			$taskText = "$taskText" + "AvgSpeedBps" + "`t" + "$taskAvgSpeed" + "`n"
 
-			$myTaskAvgSpeed = $myTask.Progress.AvgSpeed
+			$taskDisplayName = $task.Progress.DisplayName
+			$taskText = "$taskText" + "DisplayName" + "`t" + "$taskDisplayName" + "`n"
 
-			$myTaskText = "$myTaskText" + "AvgSpeedBps" + "`t" + "$myTaskAvgSpeed" + "`n"
-
-			$myTaskDisplayName = $myTask.Progress.DisplayName
-
-			$myTaskText = "$myTaskText" + "DisplayName" + "`t" + "$myTaskDisplayName" + "`n"
-
-			$myBackupHost = Hostname
-
-			$myTaskText = "$myTaskText" + "BackupServer" + "`t" + "$myBackupHost" + "`n"
-
-			$myTaskText = "$myTaskText" + "<<<<" + ">>>>" + "`n"
+			$backupHost = Hostname
+			$taskText = "$taskText" + "BackupServer" + "`t" + "$backupHost" + "`n"
+			$taskText = "$taskText" + "<<<<" + ">>>>" + "`n"
 		}
 	}
 
-	Write-Host $myJobsText
-	Write-Host $myTaskText
+	Write-Host $jobsText
+	Write-Host $taskText
 }
 
 #####################################
