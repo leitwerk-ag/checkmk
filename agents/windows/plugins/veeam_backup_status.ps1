@@ -688,7 +688,7 @@ function Write-CDPJobs {
 
 function Write-BackupJobs {
 	$backupJobs = Get-VBRJob -WarningAction SilentlyContinue | Where-Object { $_.IsScheduleEnabled -and !$_.Options.JobOptions.RunManually }
-	$jobsText = "<<<veeam_jobs:sep(9):encoding(cp437)>>>`n"
+	$jobsText = "<<<veeam_jobs:sep(124):encoding(cp437)>>>`n"
 	$taskText = ""
 	foreach ($job in $backupJobs) {
 		$jobName = $job.Name -replace "\'", "_" -replace " ", "_"
@@ -718,7 +718,7 @@ function Write-BackupJobs {
 
 		$jobLastScheduledJobDate = Get-LastScheduledBackupDate $job | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 
-		$jobsText = "$jobsText$jobName`t$jobId`t$jobType`t$jobLastState`t$jobLastResult`t$jobCreationTime`t$jobEndTime`t$jobLastScheduledJobDate`t$jobLogErrorMessages`n"
+		$jobsText = "$jobsText$jobName|$jobId|$jobType|$jobLastState|$jobLastResult|$jobCreationTime|$jobEndTime|$jobLastScheduledJobDate|$jobLogErrorMessages`n"
         
 		# For Non Backup Jobs (Replicas) we bail out
 		# because we are interested in the status of the original backup but
@@ -743,7 +743,7 @@ function Write-BackupJobs {
 
 			$taskStatus = $task.Status
 			$taskText = "$taskText" + "Status" + "`t" + "$taskStatus" + "`n"
-			
+
 			$taskText = "$taskText" + "JobName" + "`t" + "$jobName" + "`n"
 
 			$taskTotalSize = $task.Progress.TotalSize
