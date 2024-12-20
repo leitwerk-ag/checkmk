@@ -1,4 +1,4 @@
-param ([switch] $Debug)
+﻿param ([switch] $Debug)
 $CMK_VERSION = "2.4.0b1"
 ## VEEAM Backups
 ## This powershell script needs to be run with the 64bit powershell
@@ -39,9 +39,8 @@ try {
 	#####################################
 	## Tape Job
 	#####################################
-	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.ScheduleOptions.Enabled -or $_.FullBackupPolicy.Enabled -or $_.IncrementalBackupPolicy.Enabled }
-	Write-Host "<<<veeam_tapejobs:sep(124)>>>"
-	Write-Host "JobName|JobID|JobType|LastResult|LastState|CreationTime|EndTime|LogErrorMessages"
+	$tapeJobs = Get-VBRTapeJob -WarningAction SilentlyContinue | Where-Object { $_.Enabled -and ($_.ScheduleOptions.Enabled -or $_.FullBackupPolicy.Enabled -or $_.IncrementalBackupPolicy.Enabled) }
+	Write-Host "<<<veeam_tapejobs:sep(124):encoding(cp437)>>>"
 	foreach ($tapeJob in $tapeJobs) {
 		$jobName = $tapeJob.Name
 		$jobID = $tapeJob.Id
@@ -64,7 +63,7 @@ try {
 
 		if ($null -ne $lastFinischedSession) {
 			$errorLog = $lastFinischedSession.Log | Where-Object { $_.Status -ne [Veeam.Backup.PowerShell.Infos.VBRLogStatus]::Succeeded }
-			$logErrorMessages = $errorLog.Title -join ";"
+			$logErrorMessages = $errorLog.Title -replace "`n","; " -replace "`r","" -join "^"
 		}
 		
 		$lastSession = $sessions[0]
@@ -88,7 +87,7 @@ try {
 	}
 
 	if ($cdpjobs) {
-		$myCdpJobsText = "<<<veeam_cdp_jobs:sep(124)>>>`n"
+		$myCdpJobsText = "<<<veeam_cdp_jobs:sep(124):encoding(cp437)>>>`n"
 
 		foreach ($mycdpjobs in $cdpjobs) {
 			$MyCdpJobsName = $mycdpjobs.Name -replace "\'", "_" -replace " ", "_"
@@ -112,10 +111,10 @@ try {
 	#####################################
 	## Backup Job
 	#####################################
-	$myJobsText = "<<<veeam_jobs:sep(9)>>>`n"
+	$myJobsText = "<<<veeam_jobs:sep(9):encoding(cp437)>>>`n"
 	$myTaskText = ""
 
-	$myBackupJobs = Get-VBRJob -WarningAction SilentlyContinue | Where-Object { $_.IsScheduleEnabled -eq $true }
+	$myBackupJobs = Get-VBRJob -WarningAction SilentlyContinue | Where-Object { $_.IsScheduleEnabled -and !$_.Options.JobOptions.RunManually }
 
 	foreach ($myJob in $myBackupJobs) {
 		$myJobName = $myJob.Name -replace "\'", "_" -replace " ", "_"
@@ -128,27 +127,25 @@ try {
 
 		$myJobLastResult = $myJob.GetLastResult()
         
-        $myJobLastSession = $myJob.FindLastSession()
-		if (($null -eq $myJobLastSession) -or ($null -eq $myJobLastSession.Logger.GetLog().UpdatedRecords)) {
-			$myJobLastSession = Get-VBRBackupSession -Name "$myJobName*" | Sort-Object CreationTime -Descending | Select-Object -First 1
+		$myJobLastSession = $myJob.FindLastSession()
+
+		$myJobLogErrorMessages = ""
+		$myJobCreationTime = ""
+		$myJobEndTime = ""
+		if ($null -ne $myJobLastSession) {
+			$myJobErrorLog = $myJobLastSession.Logger.GetLog().UpdatedRecords
+			if ($null -ne $myJobErrorLog) {
+				$myJobLogErrorMessages = ($myJobErrorLog | Where-Object { $_.Status -ne [Veeam.Backup.Common.ETaskLogRecordStatus]::ESucceeded }).Title -replace "`n","; " -replace "`r","" -join "^"
+			}
+
+			if ($null -ne $myJobLastSession.CreationTime) {
+				$myJobCreationTime = $myJobLastSession.CreationTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+			}
+
+			if ($null -ne $myJobLastSession.EndTime) {
+				$myJobEndTime = $myJobLastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
+			}
 		}
-
-        $myJobLogErrorMessages = "null"
-        $myJobCreationTime = "null"
-		$myJobEndTime = "null"
-        if ($null -ne $myJobLastSession) {
-            $myJobErrorLog = $myJobLastSession.Logger.GetLog().UpdatedRecords    
-		    if ($null -ne $myJobErrorLog) {
-			    $myJobLogErrorMessages = ($myJobErrorLog | Where-Object { $_.Status -ne [Veeam.Backup.Common.ETaskLogRecordStatus]::ESucceeded }).Title -join ";"
-		    }
-            else {
-                $myJobLogErrorMessages = ""
-            }
-
-            $myJobCreationTime = $myJobLastSession.CreationTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
-
-		    $myJobEndTime = $myJobLastSession.EndTime | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
-        }
 
 		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobId" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`t" + "$myJobLogErrorMessages" + "`n"
         
@@ -173,7 +170,7 @@ try {
 
 			$myTaskText = "$myTaskText" + "<<<<" + "$myTaskName" + ">>>>" + "`n"
 
-			$myTaskText = "$myTaskText" + "<<<" + "veeam_client:sep(9)" + ">>>" + "`n"
+			$myTaskText = "$myTaskText" + "<<<" + "veeam_client:sep(9):encoding(cp437)" + ">>>" + "`n"
 
 			$myTaskStatus = $myTask.Status
 
