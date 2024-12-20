@@ -1,4 +1,4 @@
-param ([switch] $Debug)
+﻿param ([switch] $Debug)
 $CMK_VERSION = "2.4.0b1"
 ## VEEAM Backups
 ## This powershell script needs to be run with the 64bit powershell
@@ -695,9 +695,6 @@ function Write-BackupJobs {
 		$myJobLastScheduledJobDate = Get-LastScheduledBackupDate $myJob | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 
 		$myJobsText = "$myJobsText" + "$myJobName" + "`t" + "$myJobType" + "`t" + "$myJobLastState" + "`t" + "$myJobLastResult" + "`t" + "$myJobCreationTime" + "`t" + "$myJobEndTime" + "`t" + "$myJobLastScheduledJobDate" + "`n"
-
-		# TODO when should the last backup had started
-		
 
 		# For Non Backup Jobs (Replicas) we bail out
 		# because we are interested in the status of the original backup but
