@@ -712,7 +712,7 @@ function Write-BackupJobs {
 
 		$jobLastScheduledJobDate = Get-LastScheduledBackupDate $job | Get-Date -Format "dd.MM.yyyy HH\:mm\:ss" -ErrorAction SilentlyContinue
 
-		$jobsText = "$jobsText$jobName|$jobId|$jobType|$jobLastState|$jobLastResult|$jobCreationTime|$jobEndTime|$jobLastScheduledJobDate|$jobLogErrorMessages`n"
+		$jobsText = "$jobsText$jobName|$jobId|$jobType|$jobLastResult|$jobLastState|$jobCreationTime|$jobEndTime|$jobLastScheduledJobDate|$jobLogErrorMessages`n"
         
 		# For Non Backup Jobs (Replicas) we bail out
 		# because we are interested in the status of the original backup but
